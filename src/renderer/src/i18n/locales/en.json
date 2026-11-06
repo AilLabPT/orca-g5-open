@@ -228,6 +228,19 @@
       "existingTitle": "Add on the {{distro}} host (recommended)",
       "existingWhy": "{{distro}} already runs as a host, so Git, files and terminals run natively in Linux instead of across the Windows file share.",
       "existingAccept": "Add on host"
+    },
+    "cardSlot": {
+      "needsYouLabel": "Waiting on you",
+      "failedLabel": "Last turn failed",
+      "markedUnread": "Marked unread by you",
+      "unread": "Unread result",
+      "working": "Working",
+      "offlineLabel": "Host offline",
+      "offline": "offline",
+      "needYouCount": "{{count}} need you",
+      "needsYou": "Needs you",
+      "failed": "Failed",
+      "lastSeen": "Last seen {{state}}"
     }
   },
   "app": {
@@ -8683,6 +8696,14 @@
             "modeAriaLabel": "Agent Dashboard open mode",
             "modeInWindow": "In-window",
             "modePopout": "Pop-out"
+          },
+          "worktreeCardStyle": {
+            "title": "Card style",
+            "copy": "Choose how workspace cards look in the sidebar. Experimental 2.0 shows only what needs you, on the right.",
+            "ariaLabel": "Card style",
+            "classic": "Classic",
+            "experimental1": "Experimental 1.0",
+            "experimental2": "Experimental 2.0"
           }
         },
         "FloatingWorkspacePane": {
@@ -10885,6 +10906,10 @@
               "inWindow": "in-window",
               "worktrees": "worktrees",
               "eaf17a7214": "Agent dashboard"
+            },
+            "worktreeCardStyle": {
+              "title": "Card style",
+              "description": "Choose how workspace cards look in the sidebar. Experimental 2.0 shows only what needs you, on the right."
             }
           }
         },
