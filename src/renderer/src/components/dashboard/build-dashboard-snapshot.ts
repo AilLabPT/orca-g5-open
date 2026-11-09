@@ -10,6 +10,7 @@ import {
 } from '../../../../shared/dashboard-snapshot'
 import type { RepoIcon } from '../../../../shared/repo-icon'
 import { parsePaneKey } from '../../../../shared/workspace-layout/stable-pane-id'
+import { resolveRuntimePaneTitleForLeaf } from '../../../../shared/runtime-pane-title-leaf-id'
 import {
   resolveDashboardCardTerminalInput,
   type DashboardCardTerminalInputState
@@ -195,6 +196,13 @@ export function buildDashboardSnapshot(
               paneKey: routingPaneKey,
               cwd: row.tab.startupCwd ?? worktree.path,
               shellOverride: row.tab.shellOverride,
+              paneTitle: leafId
+                ? resolveRuntimePaneTitleForLeaf(
+                    terminalLayoutsByTabId[tabId],
+                    paneTitlesByTabId[tabId],
+                    leafId
+                  )
+                : null,
               launchAgent: row.tab.launchAgent,
               clientPlatform: clientHost.platform,
               userAgent: clientHost.userAgent,
