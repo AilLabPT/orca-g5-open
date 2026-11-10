@@ -4,7 +4,8 @@ import type { ProjectGroup } from '../project-group-types'
 import type { Repo } from '../repo-types'
 import { NO_WORKSPACE_ROW_FILTERS } from '../workspace-view/workspace-row-filters'
 import type { Worktree } from '../worktree/types'
-import { ALL_GROUP_KEY } from './group-keys'
+import { ALL_GROUP_KEY, getLineageGroupKey } from './group-keys'
+import { lineageIdentities } from './worktree-lineage-range'
 import type { HostSectionRow } from './host-section-rows'
 import { normalizePairedServerRow } from './paired-server-rows'
 import type { SidebarFeedDomains } from './sidebar-feed-domains'
@@ -214,6 +215,28 @@ describe('buildSidebarFeedRows nests each paired server’s own lineage', () => 
     ])
   })
 
+  it.each([false, true])('carries host-qualified descendants when collapsed: %s', (collapsed) => {
+    const built = buildSidebarFeedRows(
+      feed(false),
+      catalog(repos),
+      view({
+        collapsedGroups: collapsed ? new Set([getLineageGroupKey('runtime:a|r::/r/p')]) : new Set()
+      })
+    )
+    const parent = built.sectionRows.find(
+      (row) =>
+        row.type === 'item' && row.worktree.hostId === 'runtime:a' && row.worktree.id === 'r::/r/p'
+    )
+    if (parent?.type !== 'item') {
+      throw new Error('Missing parent')
+    }
+    expect([...lineageIdentities(parent.lineageDescendantIdentities ?? [])]).toEqual([
+      'runtime:a|r::/r/c'
+    ])
+    expect(parent.lineageDescendantsHidden).toBe(collapsed)
+    expect(outline(built.sectionRows).includes('runtime:a|r::/r/c@1')).toBe(!collapsed)
+  })
+
   it('brings back a server’s filtered-out parent above its own child, not its twin’s', () => {
     // Only server A's child is awake: B's same-id rows stay asleep.
     const awake = new Map([
@@ -334,6 +357,28 @@ describe('buildSidebarFeedRows nests a server’s workspace under its folder wor
   const feed = domains({
     pairedServerHosts: new Map([['runtime:a', { freshness: 'live', host: null }]]),
     pairedServerRows: new Map(rows.map((row) => [row.key, row]))
+  })
+
+  it.each([false, true])('carries folder descendants when collapsed: %s', (collapsed) => {
+    const built = buildSidebarFeedRows(
+      feed,
+      catalog([repo('r', { executionHostId: 'runtime:a', projectGroupId: 'g' })], [group]),
+      view({
+        groupBy: 'repo',
+        collapsedGroups: collapsed
+          ? new Set([getLineageGroupKey('runtime:a|folder:f-1')])
+          : new Set()
+      })
+    )
+    const parent = built.sectionRows.find((row) => row.type === 'folder-workspace')
+    if (parent?.type !== 'folder-workspace') {
+      throw new Error('Missing folder parent')
+    }
+    expect([...lineageIdentities(parent.lineageDescendantIdentities ?? [])]).toEqual([
+      'runtime:a|r::/r/c'
+    ])
+    expect(parent.lineageDescendantsHidden).toBe(collapsed)
+    expect(outline(built.sectionRows).includes('runtime:a|r::/r/c@1')).toBe(!collapsed)
   })
 
   it('places the workspace under the folder in the folder’s project group', () => {
