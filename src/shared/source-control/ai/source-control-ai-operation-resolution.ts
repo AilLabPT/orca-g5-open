@@ -1,9 +1,4 @@
-import {
-  isGlobalOnlyAiTextAction,
-  WORKSPACE_ICON_DEFAULT_AGENT,
-  WORKSPACE_ICON_DEFAULT_MODEL
-} from './recipes/source-control-ai-actions'
-import { isTuiAgentEnabled } from '../../agent-launch/catalog/tui-agent-selection'
+import { isGlobalOnlyAiTextAction } from './recipes/source-control-ai-actions'
 import {
   CUSTOM_AGENT_ID,
   getCommitMessageAgentSpec,
@@ -92,16 +87,14 @@ const COMMAND_TEMPLATE_EMPTY = {
   commitMessage: 'commandTemplateEmptyCommitMessage',
   pullRequest: 'commandTemplateEmptyPullRequest',
   branchName: 'commandTemplateEmptyBranchName',
-  conversationName: 'commandTemplateEmptyChatName',
-  workspaceIcon: 'commandTemplateEmptyWorkspaceIcon'
+  conversationName: 'commandTemplateEmptyChatName'
 } as const satisfies Record<AiTextOperation, TextGenerationFailureCode>
 
 const AGENT_CANNOT_GENERATE = {
   commitMessage: 'agentCannotGenerateCommitMessage',
   pullRequest: 'agentCannotGeneratePullRequest',
   branchName: 'agentCannotGenerateBranchName',
-  conversationName: 'agentCannotGenerateChatName',
-  workspaceIcon: 'agentCannotGenerateWorkspaceIcon'
+  conversationName: 'agentCannotGenerateChatName'
 } as const satisfies Record<AiTextOperation, TextGenerationFailureCode>
 
 function supportedAgentLabels(): string {
@@ -141,16 +134,7 @@ export function resolveSourceControlAiForOperation(
   if (!actionRecipe.commandInputTemplate.trim()) {
     return resolveFailure(textGenerationFailure(COMMAND_TEMPLATE_EMPTY[input.operation]))
   }
-  // An unpicked icon agent means Orca's cheap default, not the user's general Source Control agent.
-  const iconDefault =
-    input.operation === 'workspaceIcon' &&
-    !actionRecipe.agentId &&
-    isTuiAgentEnabled(WORKSPACE_ICON_DEFAULT_AGENT, input.settings.disabledTuiAgents)
-  const preferredAgent = iconDefault
-    ? WORKSPACE_ICON_DEFAULT_AGENT
-    : hasActionAgentRecipe(actionRecipe)
-      ? actionRecipe.agentId
-      : source.agentId
+  const preferredAgent = hasActionAgentRecipe(actionRecipe) ? actionRecipe.agentId : source.agentId
   const agentChoice = resolveCommitMessageAgentChoice(
     preferredAgent,
     input.settings.defaultTuiAgent,
@@ -218,9 +202,6 @@ export function resolveSourceControlAiForOperation(
   }
   const hostKey = input.discoveryHostKey ?? LOCAL_COMMIT_MESSAGE_HOST_KEY
   const persistedModelId = selectPersistedModelId({
-    ...(input.operation === 'workspaceIcon' && resolvedAgent === WORKSPACE_ICON_DEFAULT_AGENT
-      ? { operationDefaultModelId: WORKSPACE_ICON_DEFAULT_MODEL }
-      : {}),
     source,
     legacy,
     repoOverrides,

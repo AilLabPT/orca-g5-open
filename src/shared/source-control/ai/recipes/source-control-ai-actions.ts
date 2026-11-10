@@ -18,7 +18,7 @@ import {
 
 export type SourceControlTextActionId = 'commitMessage' | 'pullRequest' | 'branchName'
 /** Text actions configured only in global settings; repository overrides never apply. */
-export type GlobalOnlyAiTextActionId = 'conversationName' | 'workspaceIcon'
+export type GlobalOnlyAiTextActionId = 'conversationName'
 export type AiTextActionId = SourceControlTextActionId | GlobalOnlyAiTextActionId
 
 export type SourceControlLaunchActionId =
@@ -96,17 +96,12 @@ export const SOURCE_CONTROL_ACTION_IDS = [
 
 export const AI_TEXT_ACTION_IDS = [
   ...SOURCE_CONTROL_TEXT_ACTION_IDS,
-  'conversationName',
-  'workspaceIcon'
+  'conversationName'
 ] as const satisfies readonly AiTextActionId[]
 
 export function isGlobalOnlyAiTextAction(actionId: string): actionId is GlobalOnlyAiTextActionId {
-  return actionId === 'conversationName' || actionId === 'workspaceIcon'
+  return actionId === 'conversationName'
 }
-
-// Icons are batch work where per-call overhead dominates, so they default to a small tool-light model.
-export const WORKSPACE_ICON_DEFAULT_AGENT = 'claude' satisfies TuiAgent
-export const WORKSPACE_ICON_DEFAULT_MODEL = 'haiku'
 
 export const AI_ACTION_IDS = [
   ...AI_TEXT_ACTION_IDS,
@@ -137,7 +132,6 @@ export const DEFAULT_SOURCE_CONTROL_ACTION_COMMAND_TEMPLATES: Record<AiActionId,
   pullRequest: '{basePrompt}',
   branchName: '{basePrompt}',
   conversationName: '{basePrompt}',
-  workspaceIcon: '{basePrompt}',
   fixCommitFailure: '{basePrompt}',
   fixPushFailure: '{basePrompt}',
   fixChecks: '{basePrompt}',

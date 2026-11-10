@@ -163,8 +163,6 @@ export function selectPersistedModelId(args: {
   hostKey: string
   agentId: TuiAgent
   defaultModelId: string
-  /** Outranks shared picks but not this operation's own pick. */
-  operationDefaultModelId?: string
 }): string {
   const { source, legacy, repoOverrides, operation, hostKey, agentId, defaultModelId } = args
   return (
@@ -180,7 +178,6 @@ export function selectPersistedModelId(args: {
       hostKey,
       agentId
     ) ??
-    args.operationDefaultModelId ??
     readSourceControlAiModelChoiceForHost(
       {
         selectedModelByAgent: source.selectedModelByAgent,

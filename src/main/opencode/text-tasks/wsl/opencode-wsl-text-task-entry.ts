@@ -25,8 +25,7 @@ const request = z.object({
       'pull-request-fields',
       'branch-name',
       'jira-issue-summary',
-      'conversation-name',
-      'worktree-icon'
+      'conversation-name'
     ])
     .optional(),
   timeoutMs: z.number().int().positive()
