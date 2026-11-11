@@ -1,7 +1,3 @@
-import {
-  getWorktreeCardStyle,
-  isExperimentalWorktreeCardStyle
-} from '../../../../../../shared/worktree/card-style'
 import React, { useCallback, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/store'
 import { selectSidebarLineageParentIdentities } from '@/store/slices/worktrees/metadata/cross-store-lineage-parents'
@@ -78,7 +74,7 @@ export const VirtualizedWorktreeViewport = React.memo(function VirtualizedWorktr
     repoMap,
     projectGrouping: props.projectGrouping
   })
-  const newCardStyle = isExperimentalWorktreeCardStyle(getWorktreeCardStyle(settings))
+  const newCardStyle = settings?.experimentalNewWorktreeCardStyle === true
   const {
     handleOpenRepoSettings,
     handleOpenWorktreeVisibility,
