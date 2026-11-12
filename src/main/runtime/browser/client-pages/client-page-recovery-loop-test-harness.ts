@@ -91,7 +91,12 @@ export function createRecoveryLoop(
       notify()
     }
   }
-  const hostRuntime = new RecoveryRuntime(profile.store, undefined, {})
+  const hostRuntime: OrcaRuntimeService & {
+    projectedFrames: number
+    sessionTabsSequence(): number
+    peekSnapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
+    snapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
+  } = new RecoveryRuntime(profile.store, undefined, {})
   const registerSubscription = hostRuntime.registerSubscriptionCleanup.bind(hostRuntime)
   hostRuntime.registerSubscriptionCleanup = (id, cleanup, connection) => {
     registerSubscription(id, cleanup, connection)
