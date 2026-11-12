@@ -111,6 +111,7 @@ export class BrowserClientPageInitializations {
     }
     const browserPageId = initializer.identity.browserPageId
     return {
+      isRetired: () => initializer.cleaned === true,
       cancel: (close) => this.operations.get(browserPageId) === initializer && this.cancel(close),
       close: async (signal) => {
         assertBrowserClientPageCommandNotAborted(signal)
@@ -126,6 +127,15 @@ export class BrowserClientPageInitializations {
         }
       }
     }
+  }
+
+  retirePage(browserPageId: string, pageHostGeneration: number): Promise<boolean> | undefined {
+    const initializer = this.operations.get(browserPageId)
+    if (initializer?.identity.pageHostGeneration !== pageHostGeneration) {
+      return undefined
+    }
+    initializer.controller?.abort()
+    return this.cleanupInitializer(initializer).then(() => true)
   }
 
   cancel(event: BrowserClientHostCommandEvent): boolean {

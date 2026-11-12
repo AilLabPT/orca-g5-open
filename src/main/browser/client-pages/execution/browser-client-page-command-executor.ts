@@ -238,12 +238,15 @@ export class BrowserClientPageCommandExecutor {
   }
 
   retirePage(browserPageId: string, pageHostGeneration: number): Promise<boolean> {
-    return retireBrowserClientRetainedPage(
-      this.pages,
-      this.failedPages,
-      browserPageId,
-      pageHostGeneration,
-      (page) => this.cleanupPage(page)
+    return (
+      this.initializers.retirePage(browserPageId, pageHostGeneration) ??
+      retireBrowserClientRetainedPage(
+        this.pages,
+        this.failedPages,
+        browserPageId,
+        pageHostGeneration,
+        (page) => this.cleanupPage(page)
+      )
     )
   }
 

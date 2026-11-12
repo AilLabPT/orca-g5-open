@@ -1,4 +1,7 @@
-import { openRecoveryTabsStream } from './client-page-recovery-stream-test-harness'
+import {
+  openRecoveryTabsStream,
+  publishRecoveryTabsGraph
+} from './client-page-recovery-stream-test-harness'
 import { expect, it, vi } from 'vitest'
 import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
 import { retireRuntimeBrowserClientPage } from './browser-client-page-close'
@@ -65,6 +68,7 @@ it.each([false, true])(
   'same-ledger inventory keeps an outstanding create with fast sibling=%s',
   async (withFast) => {
     const h = createRecoveryLoop(['slow'])
+    publishRecoveryTabsGraph(h.hostRuntime)
     const firstDelivery = Promise.withResolvers<void>()
     const stream = openRecoveryTabsStream(h.hostRuntime, `outstanding-${withFast}`)
     let held = false
@@ -178,35 +182,58 @@ it('an omitted inventory cannot certify a retired native target absent', async (
   }
 })
 
-it('complete absence retires settled-create nonallocating work before replay', async () => {
-  const h = createRecoveryLoop(['slow'])
-  const pending = Promise.withResolvers<void>()
-  let heldCommand: string | undefined
-  h.hooks.delivery = (event, dispatch) => {
-    if (event.command.type === 'navigate' && !heldCommand) {
-      heldCommand = event.commandId
-      pending.resolve()
-      return
+it.each(['native-retirement', 'initialization-failure'] as const)(
+  'complete absence after %s retires settled-create nonallocating work before replay',
+  async (cause) => {
+    const h = createRecoveryLoop(['slow'])
+    const pending = Promise.withResolvers<void>()
+    const resultDelivery = Promise.withResolvers<void>()
+    let heldCommand: string | undefined
+    if (cause === 'initialization-failure') {
+      h.hooks.failCommit = true
+      h.hooks.beforeResult = async (event) => {
+        if (event.command.type === 'navigate' && !heldCommand) {
+          heldCommand = event.commandId
+          pending.resolve()
+          await resultDelivery.promise
+        }
+      }
+    } else {
+      h.hooks.delivery = (event, dispatch) => {
+        if (event.command.type === 'navigate' && !heldCommand) {
+          heldCommand = event.commandId
+          pending.resolve()
+          return
+        }
+        dispatch()
+      }
     }
-    dispatch()
+    try {
+      const first = h.attach()
+      await pending.promise
+      expect(h.results).toContainEqual({ id: 'slow', type: 'createPage', status: 'completed' })
+      const inventory = h.executor.snapshotPageInventory()
+      if (cause === 'native-retirement') {
+        expect(inventory).toHaveLength(1)
+        await h.executor.retirePage('slow', inventory[0]!.pageHostGeneration)
+      } else {
+        expect(inventory).toEqual([])
+        h.hooks.failCommit = false
+      }
+      const next = h.attach({ inventory: [] })
+      await h.published('slow')
+      expect(h.commands.filter((event) => event.commandId === heldCommand)).toHaveLength(1)
+      expect(h.commands.filter((event) => event.command.type === 'createPage')).toHaveLength(2)
+      expect(h.executor.snapshotPageInventory()).toHaveLength(1)
+      expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+      expect(h.errors).toEqual([])
+      resultDelivery.resolve()
+      first.abort()
+      next.abort()
+      await Promise.all([first.completion, next.completion])
+    } finally {
+      resultDelivery.resolve()
+      await h.close()
+    }
   }
-  try {
-    const first = h.attach()
-    await pending.promise
-    expect(h.results).toContainEqual({ id: 'slow', type: 'createPage', status: 'completed' })
-    const inventory = h.executor.snapshotPageInventory()
-    expect(inventory).toHaveLength(1)
-    await h.executor.retirePage('slow', inventory[0]!.pageHostGeneration)
-    const next = h.attach({ inventory: [] })
-    await h.published('slow')
-    expect(h.commands.filter((event) => event.commandId === heldCommand)).toHaveLength(1)
-    expect(h.commands.filter((event) => event.command.type === 'createPage')).toHaveLength(2)
-    expect(h.executor.snapshotPageInventory()).toHaveLength(1)
-    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
-    first.abort()
-    next.abort()
-    await Promise.all([first.completion, next.completion])
-  } finally {
-    await h.close()
-  }
-})
+)

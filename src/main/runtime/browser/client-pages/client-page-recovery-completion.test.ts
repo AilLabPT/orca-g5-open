@@ -1,7 +1,11 @@
+import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from './client-hosted-browser-page-persistence'
 import { expect, it, vi } from 'vitest'
 import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
 import { RpcDispatcher } from '../../rpc/dispatcher'
-import { openRecoveryTabsStream } from './client-page-recovery-stream-test-harness'
+import {
+  openRecoveryTabsStream,
+  publishRecoveryTabsGraph
+} from './client-page-recovery-stream-test-harness'
 import { createRecoveryPeer } from './client-page-recovery-peer-test-harness'
 import { SESSION_TAB_METHODS } from '../../rpc/methods/session-tabs/session-tabs'
 
@@ -10,7 +14,8 @@ const WORKSPACE = 'repo-1::/tmp/worktree-a'
 it.each([false, true])(
   'clears legacy held snapshots before its pending navigation, with modern peer=%s',
   async (withModern) => {
-    const h = createRecoveryLoop(['slow'])
+    const h = createRecoveryLoop(withModern ? [] : ['slow'])
+    publishRecoveryTabsGraph(h.hostRuntime)
     const stream = openRecoveryTabsStream(h.hostRuntime, 'legacy-consumer')
     const peer = createRecoveryPeer(h.hostRuntime, 'modern-peer')
     try {
@@ -39,6 +44,17 @@ it.each([false, true])(
         const started = peer.hold('peer')
         peer.attach()
         await started
+        h.pages.publishClientPage({
+          browserPageId: 'slow',
+          workspaceId: WORKSPACE,
+          browserProfileId: 'profile-a',
+          executionHostKey: 'old-key',
+          placement: RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT,
+          pairedDeviceId: 'device-a',
+          url: 'https://example.internal/slow',
+          loading: false,
+          active: false
+        })
       }
       expect(
         h.hostRuntime.snapshotForClient(WORKSPACE, 'device-a').clientHostedPagesUnreconciled

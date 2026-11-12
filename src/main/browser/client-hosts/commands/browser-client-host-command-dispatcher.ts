@@ -10,7 +10,10 @@ import {
   assertBrowserClientHostCommandAuthority,
   snapshotBrowserClientHostLeaseAuthority
 } from './browser-client-host-command-authority'
-import { joinBrowserClientHostCommands } from './browser-client-host-command-join'
+import {
+  joinBrowserClientHostCommands,
+  retireBrowserClientCommandPage
+} from './browser-client-host-command-join'
 import {
   assertNewPageCommand,
   cancelBrowserClientPageCommands,
@@ -75,6 +78,19 @@ export class BrowserClientHostCommandDispatcher {
     }
     assertBrowserClientHostCommandAuthority(this.authority, command)
     const acceptedCommand = snapshotCommandEvent(command)
+    const previousPage = this.pages.get(acceptedCommand.browserPageId)
+    if (
+      previousPage &&
+      acceptedCommand.pageHostGeneration > previousPage.generation &&
+      !previousPage.retired &&
+      previousPage.initialization?.isRetired()
+    ) {
+      return this.retirePage(previousPage.browserPageId, previousPage.generation).then((settled) =>
+        settled
+          ? this.dispatch(acceptedCommand)
+          : failedCommandResult('browser_host_page_retirement_pending')
+      )
+    }
     const admission = selectCommandPage(
       this.pages,
       this.limits.maxPages,
@@ -93,7 +109,6 @@ export class BrowserClientHostCommandDispatcher {
     if (page.queue.length >= this.limits.maxQueuedCommandsPerPage) {
       throw new Error('browser_host_page_command_capacity')
     }
-    const previousPage = this.pages.get(acceptedCommand.browserPageId)
     if (acceptedCommand.command.type === 'createPage') {
       page.initialization = this.acquireInitialization?.(acceptedCommand)
     }
@@ -114,31 +129,10 @@ export class BrowserClientHostCommandDispatcher {
     if (!page || page.generation !== pageHostGeneration) {
       throw new Error('browser_host_page_generation_stale')
     }
-    if (page.retired) {
-      return true
-    }
-    if (page.retirementPromise) {
-      return page.retirementPromise
-    }
-    let resolveRetirement = (_settled: boolean): void => {}
-    const retirement = new Promise<boolean>((resolve) => {
-      resolveRetirement = resolve
+    return retireBrowserClientCommandPage(page, this.limits.joinTimeoutMs, () => {
+      removeScheduledCommandPage(this.readyPages, this.readyPageIds, page)
+      this.cancelPage(page, 'browser_host_command_cancelled')
     })
-    page.retirementPromise = retirement
-    page.retiring = true
-    removeScheduledCommandPage(this.readyPages, this.readyPageIds, page)
-    this.cancelPage(page, 'browser_host_command_cancelled')
-    void this.waitForPageHandlers(page).then((settled) => {
-      if (settled) {
-        page.retiring = false
-        page.retired = true
-        releaseBrowserClientPageInitialization(page)
-      } else if (page.retirementPromise === retirement) {
-        page.retirementPromise = undefined
-      }
-      resolveRetirement(settled)
-    })
-    return retirement
   }
 
   forgetPage(browserPageId: string, pageHostGeneration: number): boolean {
@@ -303,12 +297,5 @@ export class BrowserClientHostCommandDispatcher {
       this.activeCommands -= 1
       this.resultCache.record(page, record, !this.closed)
     }
-  }
-
-  private async waitForPageHandlers(page: PageState): Promise<boolean> {
-    return joinBrowserClientHostCommands(
-      page.queue.flatMap((record) => (record.handlerPromise ? [record.handlerPromise] : [])),
-      this.limits.joinTimeoutMs
-    )
   }
 }

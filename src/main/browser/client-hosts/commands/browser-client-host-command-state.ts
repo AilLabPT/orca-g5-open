@@ -36,6 +36,7 @@ export type CommandRecord = {
 }
 
 export type BrowserClientInitializationOwner = {
+  isRetired(): boolean
   cancel(event: BrowserClientHostCommandEvent): boolean
   close(signal: AbortSignal): Promise<BrowserClientHostCommandResult>
   release(): void

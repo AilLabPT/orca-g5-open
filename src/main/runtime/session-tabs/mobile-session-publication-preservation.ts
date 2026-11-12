@@ -18,9 +18,6 @@ export abstract class OrcaRuntimeWithStoredMobileSnapshotHasStalePreservedTab ex
   protected abstract getListedBrowserTabsByPageId(
     ...args: Parameters<ScheduleMobileSessionTabsChangedMethods['getListedBrowserTabsByPageId']>
   ): ReturnType<ScheduleMobileSessionTabsChangedMethods['getListedBrowserTabsByPageId']>
-  protected abstract selectMobileSessionTabsListeners(
-    ...args: Parameters<ScheduleMobileSessionTabsChangedMethods['selectMobileSessionTabsListeners']>
-  ): ReturnType<ScheduleMobileSessionTabsChangedMethods['selectMobileSessionTabsListeners']>
 
   protected abstract notifyMobileSessionTabsChangedNow(
     ...args: Parameters<
