@@ -43,35 +43,27 @@ export function ordinaryPageRpc(h: ReturnType<typeof createRecoveryLoop>, remote
   vi.spyOn(h.hostRuntime, 'browserTabCreate').mockImplementation(
     remote
       ? async (...args) =>
-          Reflect.apply(
-            orcadClientPageCommand(
-              host,
-              'browserTabCreate',
-              () => {
-                throw new Error('unexpected_engine')
-              },
-              () => false
-            )!,
-            undefined,
-            args
-          )
+          orcadClientPageCommand(
+            host,
+            'browserTabCreate',
+            () => {
+              throw new Error('unexpected_engine')
+            },
+            () => false
+          )!(...args)
       : creation.browserTabCreate.bind(creation)
   )
   vi.spyOn(h.hostRuntime, 'browserOpenUrlOnClient').mockImplementation(
     remote
       ? async (...args) =>
-          Reflect.apply(
-            orcadClientPageCommand(
-              host,
-              'browserOpenUrlOnClient',
-              () => {
-                throw new Error('unexpected_engine')
-              },
-              () => false
-            )!,
-            undefined,
-            args
-          )
+          orcadClientPageCommand(
+            host,
+            'browserOpenUrlOnClient',
+            () => {
+              throw new Error('unexpected_engine')
+            },
+            () => false
+          )!(...args)
       : creation.browserOpenUrlOnClient.bind(creation)
   )
   const rpc = new RpcDispatcher({ runtime: h.hostRuntime, methods: BROWSER_CORE_METHODS })

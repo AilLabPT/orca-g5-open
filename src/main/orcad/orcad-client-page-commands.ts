@@ -42,6 +42,18 @@ const LOGICAL_TAB_QUERIES = [
   'browserTabSwitch'
 ] as const
 
+export function orcadClientPageCommand<K extends 'browserTabCreate' | 'browserOpenUrlOnClient'>(
+  host: RuntimeBrowserCommandHost,
+  name: K,
+  forward: Forward,
+  engineAvailable: () => boolean
+): RuntimeBrowserCommands[K] | undefined
+export function orcadClientPageCommand(
+  host: RuntimeBrowserCommandHost,
+  name: string,
+  forward: Forward,
+  engineAvailable: () => boolean
+): ((...args: never[]) => unknown) | undefined
 export function orcadClientPageCommand(
   host: RuntimeBrowserCommandHost,
   name: string,
