@@ -20,6 +20,13 @@ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import { getBrowserHostLeaseRegistry } from '../../browser-host/leases/browser-host-lease-registry-instance'
 import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from './client-hosted-browser-page-persistence'
 
+type RecoveryRuntimeObservation = OrcaRuntimeService & {
+  projectedFrames: number
+  sessionTabsSequence(): number
+  peekSnapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
+  snapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
+}
+
 export function createRecoveryLoop(
   ids: readonly string[],
   loopOptions: {
@@ -91,12 +98,7 @@ export function createRecoveryLoop(
       notify()
     }
   }
-  const hostRuntime: OrcaRuntimeService & {
-    projectedFrames: number
-    sessionTabsSequence(): number
-    peekSnapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
-    snapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
-  } = new RecoveryRuntime(profile.store, undefined, {})
+  const hostRuntime: RecoveryRuntimeObservation = new RecoveryRuntime(profile.store, undefined, {})
   const registerSubscription = hostRuntime.registerSubscriptionCleanup.bind(hostRuntime)
   hostRuntime.registerSubscriptionCleanup = (id, cleanup, connection) => {
     registerSubscription(id, cleanup, connection)
