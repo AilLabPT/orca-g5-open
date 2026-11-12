@@ -215,7 +215,7 @@ export function createSessionWriteSubscriber({
           : key === 'unifiedTabsByWorktree'
             ? unifiedTabsProjection.project(value as UnifiedTabsByWorktree)
             : key === 'remoteBrowserPageHandlesByPageId'
-              ? browserHandlesProjection(value as AppState['remoteBrowserPageHandlesByPageId'])
+              ? browserHandlesProjection(state.remoteBrowserPageHandlesByPageId)
               : value
     }
     const changedFields =

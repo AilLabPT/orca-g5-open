@@ -9,10 +9,10 @@ function sameSessionHandle(
   if (previous === next) {
     return true
   }
-  for (const key of new Set([...Object.keys(previous), ...Object.keys(next)]) as Set<
-    keyof RemoteBrowserPageHandle
-  >) {
-    if (key !== 'initializationPresentation' && previous[key] !== next[key]) {
+  const previousFields: Record<string, unknown> = previous
+  const nextFields: Record<string, unknown> = next
+  for (const key of new Set([...Object.keys(previousFields), ...Object.keys(nextFields)])) {
+    if (key !== 'initializationPresentation' && previousFields[key] !== nextFields[key]) {
       return false
     }
   }

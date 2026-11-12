@@ -24,9 +24,11 @@ import {
   clearWebSessionTabsTrackingForEnvironment,
   getWebSessionTabsTrackingGeneration
 } from '@/runtime/web-session-tabs-sync/tracking-lifecycle'
-import { getRuntimeEnvironmentRevision } from '@/runtime/rpc/environment-revisions/runtime-environment-revision'
+import {
+  getRuntimeEnvironmentRevision,
+  replaceRuntimeEnvironmentRevisions
+} from '@/runtime/rpc/environment-revisions/runtime-environment-revision'
 import { nextReceivedSessionTabsFrame } from '@/runtime/web-session-tabs-sync/state'
-import { replaceRuntimeEnvironmentRevisions } from '@/runtime/rpc/environment-revisions/runtime-environment-revision'
 import { resetBrowserClientHostIdForTests } from '@/runtime/browser/client-hosting/browser-client-host-identity'
 import {
   ENV,
@@ -52,7 +54,7 @@ import {
   response,
   publish,
   page
-} from './browser-page-initialization-test-rig'
+} from './browser-page-initialization-fixture'
 
 installFrameOrderingHarness()
 function submitter() {
