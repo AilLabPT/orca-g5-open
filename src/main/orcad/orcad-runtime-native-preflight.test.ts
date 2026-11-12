@@ -115,7 +115,7 @@ describe('bundled native readiness', () => {
   it('retries a timed-out PTY probe once with the normal budget', async () => {
     fixture.pty.mockRejectedValueOnce(new PtySpawnHealthTimeoutError(15_000))
     await preflightOrcadNativeRuntime()
-    expect(fixture.pty.mock.calls).toEqual([[4_000], [4_000]])
+    expect(fixture.pty.mock.calls).toEqual([[process.platform === 'win32' ? 15_000 : 4_000], [4_000]])
   })
 
   it('fails when the retry also times out', async () => {

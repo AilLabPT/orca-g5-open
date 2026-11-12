@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { orcadWindowsNodeCommandLine } from './orcad-remote-windows-node'
 import { orcadNodePtyNativeArtifacts, orcadRipgrepArtifact } from '../../../shared/orcad-artifacts'
 import { orcadAgentBrowserNativeName } from '../../../shared/orcad-agent-browser-name'
 import type { NodeRuntimeTarget } from '../../../shared/node-runtime-pin'
@@ -25,6 +26,46 @@ import {
   isRemoteInstallComplete
 } from './remote-versioned-install'
 
+async function ensureOptionalG5Docker(
+  options: Parameters<typeof installOrcadBundle>[0]
+): Promise<void> {
+  const config = options.g5Docker
+  if (!config) return
+  if (options.host.os !== 'win32') {
+    throw new Error('G5 Docker bridge requires Windows native updater host')
+  }
+  if (!/^sha256:[a-f0-9]{64}$/u.test(config.expectedImageId)) {
+    throw new Error('G5 Docker image identity missing or invalid')
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(config.container)) {
+    throw new Error('G5 Docker container name invalid')
+  }
+  if (!/^[A-Za-z]:\\/u.test(config.adapterPath) ||
+      !config.adapterPath.toLowerCase().endsWith('.ps1') ||
+      config.adapterPath.split('').some((ch) =>
+        ['%', '$', String.fromCharCode(10), String.fromCharCode(13),
+         String.fromCharCode(34), String.fromCharCode(96)].includes(ch))) {
+    throw new Error('G5 Docker adapter must use an absolute safe Windows PS1 path')
+  }
+  const command = orcadWindowsNodeCommandLine('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-File', config.adapterPath,
+    '-Action', 'Ensure', '-Container', config.container,
+    '-ExpectedImageId', config.expectedImageId, '-Apply'
+  ])
+  const result = await execCommand(options.conn, command, {
+    wrapCommand: false,
+    signal: options.signal
+  })
+  const line = result.trim().split(/\r?\n/u).at(-1) ?? ''
+  const parsed: unknown = JSON.parse(line)
+  if (typeof parsed !== 'object' || parsed === null ||
+      !('active' in parsed) || parsed.active !== 'v12' ||
+      !('runningVersion' in parsed) || parsed.runningVersion !== 'v12' ||
+      !('restartRequired' in parsed) || parsed.restartRequired !== false) {
+    throw new Error('G5 selected but V12 not running: controlled restart and health qualification required')
+  }
+}
+
 export async function installOrcadBundle(
   options: {
     conn: OrcadHostTransport
@@ -39,12 +80,19 @@ export async function installOrcadBundle(
     nodeRuntimeHostConnectTimeoutSeconds?: number
     /** WSL opt-in: reuse a matching stat signature previously hashed to this pin. */
     recordedNodeRuntimeProbe?: boolean
+    /** Explicit opt-in to verified Linux G5 sidecar. Never changes native Windows runtime. */
+    g5Docker?: {
+      adapterPath: string
+      container: string
+      expectedImageId: string
+    }
     signal?: AbortSignal
   },
   fullVersion: string,
   remoteDir: string
 ): Promise<void> {
   if (options.recordedNodeRuntimeProbe && (await cachedOrcadSlotInstalled(options, remoteDir))) {
+    await ensureOptionalG5Docker(options)
     return
   }
   // Existing slot bytes are unusable without their referenced runtime.
@@ -66,6 +114,7 @@ export async function installOrcadBundle(
       signal: options.signal
     })
   ) {
+    await ensureOptionalG5Docker(options)
     return
   }
   // Persist the token so a relaunch can prove ownership of an interrupted upload lock.
@@ -95,6 +144,7 @@ export async function installOrcadBundle(
         signal: options.signal
       })
     ) {
+      await ensureOptionalG5Docker(options)
       return
     }
     await uploadRemoteInstallDirectory(
@@ -127,6 +177,7 @@ export async function installOrcadBundle(
       signal: options.signal,
       releaseLock: false
     })
+    await ensureOptionalG5Docker(options)
   } catch (error) {
     preserveInstallLock = isUnconfirmedSshCommandTermination(error)
     throw error

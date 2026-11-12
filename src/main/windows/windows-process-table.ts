@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { lstatSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createProcessTableSnapshotReader } from '../../shared/process-table-snapshot-reader'
 import { ORCAD_WINDOWS_PROCESS_TREE_FILENAME } from '../../shared/orcad-artifacts'
@@ -83,9 +83,13 @@ function stagedRelayAddonIsUnpatched(): boolean {
     return false
   }
   try {
+    const metadata = lstatSync(addonPath)
+    // Reject unreadable, non-regular and linked binaries before loading code.
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return true
     return readFileSync(addonPath).includes(FLAGGED_ADDON_IMPORT)
   } catch {
-    return false
+    // An unreadable binary cannot be trusted, even if the npm wrapper exists.
+    return true
   }
 }
 
@@ -108,34 +112,58 @@ function adaptAddon(addon: WindowsProcessTreeAddon): WindowsProcessTreeModule {
 
 /** Load the desktop npm package or staged bare relay addon. Both remain optional across platforms/older deployments; null selects CIM on Windows and remains unavailable elsewhere. */
 function loadWindowsProcessTree(): WindowsProcessTreeModule | null {
-  if (cachedModule !== undefined) {
-    return cachedModule
-  }
+  if (cachedModule !== undefined) return cachedModule
   if (process.platform !== 'win32') {
     cachedModule = null
     return cachedModule
+  }
+  // A bundled relay must inspect its own native addon BEFORE loading it.
+  // Never permit a stale npm package to shadow a staged relay binary.
+  let stagedPath: string | undefined
+  try {
+    stagedPath = requireNative.resolve?.(RELAY_ADDON_FILENAME)
+  } catch {
+    // The standalone desktop has no staged relay binary.
+  }
+  if (stagedPath) {
+    try {
+      if (stagedRelayAddonIsUnpatched()) {
+        console.warn(
+          `[windows-process-table] the addon staged beside the relay bundle still imports ` +
+            `${FLAGGED_ADDON_IMPORT}, or cannot be verified. Refusing to load it.`
+        )
+        cachedModule = null
+        return cachedModule
+      }
+      const addon = requireNative(RELAY_ADDON_FILENAME) as WindowsProcessTreeAddon
+      if (typeof addon?.getProcessList !== 'function') {
+        cachedModule = null
+        return cachedModule
+      }
+      cachedModule = adaptAddon(addon)
+      return cachedModule
+    } catch {
+      cachedModule = null
+      return cachedModule
+    }
   }
   try {
     cachedModule = requireNative('@vscode/windows-process-tree') as WindowsProcessTreeModule
     return cachedModule
   } catch {
-    // Relays lack the npm package; try their staged addon.
+    // Test doubles without resolve() and legacy relays use the bare addon.
   }
   try {
-    const addon = requireNative(RELAY_ADDON_FILENAME) as WindowsProcessTreeAddon
-    // Reject unusable shapes so an invalid addon can fall back to CIM.
-    if (typeof addon?.getProcessList !== 'function') {
-      /* v8 ignore next 2 */
-      cachedModule = null
-      return cachedModule
-    }
     if (stagedRelayAddonIsUnpatched()) {
       console.warn(
         `[windows-process-table] the addon staged beside the relay bundle still imports ` +
-          `${FLAGGED_ADDON_IMPORT}, so it was built from unpatched source and reads every ` +
-          'process address space. Refusing it and falling back to the CIM scan; redeploy the ' +
-          'relay so the staged addon is rebuilt.'
+          `${FLAGGED_ADDON_IMPORT}, or cannot be verified. Refusing to load it.`
       )
+      cachedModule = null
+      return cachedModule
+    }
+    const addon = requireNative(RELAY_ADDON_FILENAME) as WindowsProcessTreeAddon
+    if (typeof addon?.getProcessList !== 'function') {
       cachedModule = null
       return cachedModule
     }

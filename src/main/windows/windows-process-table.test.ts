@@ -805,6 +805,41 @@ describe('resolving the native reader', () => {
     expect(addon.getProcessList).toHaveBeenCalledTimes(1)
   })
 
+  it('prefers verified staged addon over a stale workspace npm package', async () => {
+    const addon = addonReturning(NATIVE)
+    const staged = withStagedAddonBinary('MZ\\0ntdll.dll\\0GetProcessTimes\\0', addon)
+    const npmPackage = { ProcessDataFlag: { None: 0, CommandLine: 2, CreationTime: 4 },
+      supportedProcessDataFlags: 0, getAllProcesses: vi.fn() }
+    const request = vi.fn((specifier: string): unknown =>
+      specifier === PACKAGE_SPECIFIER ? npmPackage : staged(specifier))
+    const resolver = Object.assign(request, { resolve: staged.resolve })
+    __setWindowsProcessTreeRequireForTests(resolver)
+    await expect(readWindowsProcessTableFresh()).resolves.toHaveLength(2)
+    expect(addon.getProcessList).toHaveBeenCalledTimes(1)
+    expect(request).not.toHaveBeenCalledWith(PACKAGE_SPECIFIER)
+    expect(isWindowsProcessStartTimeAvailable()).toBe(true)
+  })
+
+  it('rejects an unsafe staged binary before loading any native code or npm wrapper', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const addon = addonReturning(NATIVE)
+    const staged = withStagedAddonBinary('MZ\\0ReadProcessMemory\\0', addon)
+    const request = vi.fn((specifier: string): unknown =>
+      specifier === PACKAGE_SPECIFIER ? { stale: true } : staged(specifier))
+    const resolver = Object.assign(request, { resolve: staged.resolve })
+    const cim = vi.fn().mockResolvedValue([
+      { pid: process.pid, ppid: 0, name: 'vitest.exe', command: 'node test' }
+    ])
+    __setWindowsProcessTableCimScanForTests(cim)
+    __setWindowsProcessTreeRequireForTests(resolver)
+    await expect(readWindowsProcessTableFresh()).resolves.toHaveLength(1)
+    expect(request).not.toHaveBeenCalledWith(ADDON_SPECIFIER)
+    expect(request).not.toHaveBeenCalledWith(PACKAGE_SPECIFIER)
+    expect(cim).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0]?.[0]).toContain('ReadProcessMemory')
+    warn.mockRestore()
+  })
+
   it('never probes either specifier off Windows', async () => {
     Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
     const resolve = vi.fn()
