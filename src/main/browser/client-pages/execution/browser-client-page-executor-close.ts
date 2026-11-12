@@ -11,7 +11,12 @@ export async function closeBrowserClientExecutorPages(input: {
   cleanupPage(page: BrowserClientRetainedPage): Promise<void>
   uploadStaging?: BrowserClientUploadStaging
 }): Promise<void> {
-  const retired = await Promise.allSettled(input.profileSwitches.retainedCleanups)
+  const retired = await Promise.allSettled(
+    [...input.profileSwitches.retainedCleanups].map(async (cleanup) => {
+      await cleanup()
+      input.profileSwitches.retainedCleanups.delete(cleanup)
+    })
+  )
   const failures: unknown[] = [
     ...retired.filter((result) => result.status === 'rejected').map((result) => result.reason),
     ...(input.creatingPages.size > 0 || input.profileSwitches.stagedPages.size > 0
@@ -21,7 +26,7 @@ export async function closeBrowserClientExecutorPages(input: {
   ]
   for (const [browserPageId, page] of input.pages) {
     try {
-      page.retiring ??= input.cleanupPage(page)
+      page.retiring = input.cleanupPage(page)
       await page.retiring
       forgetBrowserClientRetainedPage(input.pages, browserPageId, page)
     } catch (error) {

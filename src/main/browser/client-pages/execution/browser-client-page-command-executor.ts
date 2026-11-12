@@ -240,12 +240,8 @@ export class BrowserClientPageCommandExecutor {
   retirePage(browserPageId: string, pageHostGeneration: number): Promise<boolean> {
     return (
       this.initializers.retirePage(browserPageId, pageHostGeneration) ??
-      retireBrowserClientRetainedPage(
-        this.pages,
-        this.failedPages,
-        browserPageId,
-        pageHostGeneration,
-        (page) => this.cleanupPage(page)
+      retireBrowserClientRetainedPage(this.pages, browserPageId, pageHostGeneration, (page) =>
+        this.cleanupPage(page)
       )
     )
   }
@@ -285,9 +281,11 @@ export class BrowserClientPageCommandExecutor {
     previousRendererPage?: Readonly<BrowserClientPageRendererIdentity>,
     releaseUploads = true
   ): Promise<void> {
-    page.releaseAvailabilityWatch?.()
-    page.releaseAvailabilityWatch = undefined
-    this.dependencies.guestBinding.release(page.registration)
+    if (!page.cleanup) {
+      page.releaseAvailabilityWatch?.()
+      page.releaseAvailabilityWatch = undefined
+      this.dependencies.guestBinding.release(page.registration)
+    }
     return cleanupRetainedBrowserClientPage(
       page,
       {

@@ -1,5 +1,5 @@
 import type { BrowserClientHostCommandEvent } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
-import { cleanupBrowserClientPage } from './browser-client-page-cleanup'
+import { createBrowserClientPageCleanup } from './browser-client-page-cleanup'
 import type { BrowserClientPageNetworkRoute as RetainedNetworkRoute } from '../../network/client-routes/browser-client-page-network-route'
 import type { BrowserClientPageRenderer } from '../renderer/browser-client-page-renderer-contract'
 import {
@@ -149,8 +149,7 @@ export async function createReservedBrowserClientPage(
       route,
       routeSession
     }
-    const cleanup = (): Promise<void> =>
-      cleanupBrowserClientPage(dependencies.routeWebContents, target)
+    const cleanup = createBrowserClientPageCleanup(dependencies.routeWebContents, target)
     try {
       await cleanup()
     } catch (cleanupError) {

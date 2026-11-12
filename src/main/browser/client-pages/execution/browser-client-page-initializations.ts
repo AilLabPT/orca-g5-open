@@ -214,13 +214,8 @@ export class BrowserClientPageInitializations {
     }
     const page = initializer.page
     if (page) {
-      page.retiring ??= this.cleanupPage(page)
-      try {
-        await page.retiring
-      } catch (error) {
-        page.retiring = null
-        throw error
-      }
+      page.retiring = this.cleanupPage(page)
+      await page.retiring
       if (this.pages.get(initializer.identity.browserPageId) === page) {
         this.pages.delete(initializer.identity.browserPageId)
       }
