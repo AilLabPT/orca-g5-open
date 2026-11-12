@@ -75,7 +75,6 @@ it('does not resurrect a closed queued import from the next authenticated invent
   const ids = ['a', 'b', 'c', 'd', 'queued']
   try {
     await h.seedNative(ids)
-    const inventory = h.executor.snapshotPageInventory()
     const started = ids.slice(0, 4).map((id) => h.hold(id))
     const first = h.attach()
     await Promise.all(started)
@@ -95,7 +94,7 @@ it('does not resurrect a closed queued import from the next authenticated invent
         (event) => event.browserPageId === 'queued' && event.command.type !== 'closePage'
       )
     ).toBe(false)
-    const next = h.attach({ inventory })
+    const next = h.attach()
     first.abort()
     await first.completion
     expect(h.pages.getPage('queued')).toBeUndefined()
