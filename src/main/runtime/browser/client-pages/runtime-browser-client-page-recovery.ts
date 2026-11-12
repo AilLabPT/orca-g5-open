@@ -200,6 +200,7 @@ async function recoverPage(
       }
     }
   }
+  options.authority.cancelClientPageInitialization(page.browserPageId, page.placement)
   const placement = await options.authority.createClientPage({
     browserPageId: page.browserPageId,
     browserHostClientId: options.lease.browserHostClientId,
@@ -215,7 +216,6 @@ async function recoverPage(
     placement,
     executionHostKey
   )
-  options.authority.cancelClientPageInitialization(page.browserPageId, page.placement)
   const url = inventory?.currentUrl ?? page.url
   if (url && url !== 'about:blank') {
     await navigateRecoveredPage(options.authority, page.browserPageId, placement, url)

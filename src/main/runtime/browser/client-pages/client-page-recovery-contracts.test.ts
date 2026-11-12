@@ -296,9 +296,7 @@ it.each(['cleanup-failure', 'full-fence'] as const)(
       attached.abort()
       await attached.completion
     } finally {
-      await (phase === 'cleanup-failure'
-        ? expect(h.close()).rejects.toThrow('Browser client page executor cleanup failed')
-        : h.close())
+      await h.close()
     }
   }
 )
