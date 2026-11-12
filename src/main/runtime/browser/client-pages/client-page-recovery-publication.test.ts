@@ -79,7 +79,6 @@ it('does not resurrect a closed queued import from the next authenticated invent
     const started = ids.slice(0, 4).map((id) => h.hold(id))
     const first = h.attach()
     await Promise.all(started)
-    const cleanup = h.holdRetirement('queued')
     const page = h.pages.getPage('queued')!
     await retireRuntimeBrowserClientPage(
       {
@@ -96,7 +95,6 @@ it('does not resurrect a closed queued import from the next authenticated invent
         (event) => event.browserPageId === 'queued' && event.command.type !== 'closePage'
       )
     ).toBe(false)
-    await cleanup.started
     const next = h.attach({ inventory })
     first.abort()
     await first.completion
@@ -106,7 +104,6 @@ it('does not resurrect a closed queued import from the next authenticated invent
         (row) => row.browserPageId === 'queued'
       )
     ).toBe(false)
-    cleanup.release()
     h.release('a')
     await h.published('a')
     for (const id of ids.slice(0, 4)) {
