@@ -106,8 +106,8 @@ function harness(options: { pairedDeviceId?: string } = {}) {
   const commands: { browserPageId: string; type: string }[] = []
   const placements = new Map<string, RuntimeBrowserClientPlacement | undefined>()
   const authority = {
-    hasClientPageInitialization: () => false,
-    admitClientPageInitialization: () => false,
+    canContinueClientPageInitialization: () => false,
+    admitClientPageInitialization: () => 'stale' as const,
     authorityRuntimeId: 'runtime-new',
     authorityEpoch: 'epoch-new',
     getPlacement: vi.fn((browserPageId: string) => placements.get(browserPageId)),

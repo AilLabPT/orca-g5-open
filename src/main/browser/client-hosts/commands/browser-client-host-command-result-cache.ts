@@ -17,7 +17,8 @@ export class BrowserClientHostCommandResultCache {
       | 'maxCachedCommandResults'
       | 'maxCachedResultBytes'
       | 'maxCachedResultBytesPerPage'
-    >
+    >,
+    private readonly onEvicted?: (event: CommandRecord['event']) => void
   ) {}
 
   record(page: PageState, record: CommandRecord, retain = true): void {
@@ -75,6 +76,7 @@ export class BrowserClientHostCommandResultCache {
     if (!cached || cached.status !== 'settled' || (expected && cached !== expected)) {
       return
     }
+    this.onEvicted?.(cached.event)
     page.records.delete(sequence)
     page.sequencesByCommandId.delete(cached.event.commandId)
     const retained = this.pagesByRecord.get(cached)

@@ -133,6 +133,7 @@ const browserClientHosts =
             ],
             handler,
             cancelInitialization: (event) => executor?.cancelInitialization(event) ?? false,
+            releaseInitializationReceipt: (event) => executor?.releaseInitializationReceipt(event),
             getPageInventory,
             pageReconciliationProtocolVersion: 1,
             fileChannelProtocolVersion: 1,

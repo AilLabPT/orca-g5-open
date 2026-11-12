@@ -1,7 +1,10 @@
 import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type { BrowserClientPageExecutionHostGrant } from './browser-host-client-page-creation'
 import type { BrowserHostLeaseState } from '../leases/browser-host-lease-records'
-import type { RuntimeBrowserPlacement } from '../../../../shared/runtime-browser-placement'
+import type {
+  RuntimeBrowserClientPlacement,
+  RuntimeBrowserPlacement
+} from '../../../../shared/runtime-browser-placement'
 import type { BrowserHostRuntimePageIntent } from '../reconciliation/browser-host-page-reconciliation-plan'
 
 /** Restart-adoptable inventory requires the workspace needed by its runtime record. */
@@ -92,6 +95,7 @@ export type BrowserHostClientPageAdoptionOptions = {
   maxConcurrency?: number
   actionTimeoutMs?: number
   signal?: AbortSignal
+  onAdopted?(id: string, placement: RuntimeBrowserClientPlacement): void
 }
 
 export type BrowserHostClientPageAdoptionDependencies = {
@@ -136,6 +140,7 @@ export async function adoptBrowserHostClientPages(
         executionHostKey: intent.executionHostKey,
         release: grant.release
       })
+      options.onAdopted?.(intent.browserPageId, placement)
       adopted.push(intent.browserPageId)
     } else {
       grant.release()

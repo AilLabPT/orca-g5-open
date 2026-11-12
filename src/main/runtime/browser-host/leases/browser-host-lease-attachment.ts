@@ -118,7 +118,10 @@ export function attachBrowserHostLease(
     leasesByClientId: Map<string, BrowserHostLeaseState>
     reconnects: BrowserHostLeaseReconnectController
     generations: BrowserHostGenerationCounter
-    observeInventory(state: BrowserHostLeaseState): void
+    observeInventory(
+      state: BrowserHostLeaseState,
+      inventory: readonly BrowserClientHostedPageInventory[] | undefined
+    ): void
     fenceLease(state: BrowserHostLeaseState): void
   }
 ): BrowserHostLeaseHandle {
@@ -131,7 +134,7 @@ export function attachBrowserHostLease(
   assertBrowserHostLeaseAdmission(context.leasesByClientId.values(), input, existing)
   const restored = existing ? context.reconnects.restore(existing, input, pageInventory) : undefined
   if (restored && existing) {
-    context.observeInventory(existing)
+    context.observeInventory(existing, pageInventory)
     return restored
   }
   const generation = context.generations.take('host')
@@ -146,5 +149,6 @@ export function attachBrowserHostLease(
     pageInventory
   })
   context.leasesByClientId.set(input.browserHostClientId, state)
+  context.observeInventory(state, pageInventory)
   return context.reconnects.createHandle(state)
 }

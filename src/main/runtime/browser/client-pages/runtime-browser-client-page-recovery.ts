@@ -1,3 +1,8 @@
+import {
+  isRecoverableByLease,
+  isActiveExactPage,
+  assertInventoryAuthority
+} from './runtime-browser-client-page-recovery-authority'
 import { recoverClientPagesWithConcurrency } from './runtime-browser-client-page-recovery-queue'
 import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import { admitRuntimeBrowserPageInitialization } from './runtime-browser-page-initialization'
@@ -30,7 +35,7 @@ type RecoveryAuthority = Pick<
   | 'completePageRetirement'
   | 'createClientPage'
   | 'getPlacement'
-  | 'hasClientPageInitialization'
+  | 'canContinueClientPageInitialization'
   | 'admitClientPageInitialization'
 > & {
   issueClientPageCommand(
@@ -81,7 +86,12 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
       (page) =>
         isPlacedAsObservedAtAttach(page, options.pagePlacementsAtAttach) &&
         !options.adoptedPageIds?.has(page.browserPageId) &&
-        isRecoverableByLease(page, options.lease) &&
+        (isRecoverableByLease(page, options.lease) ||
+          options.authority.canContinueClientPageInitialization(
+            page.browserPageId,
+            page.placement,
+            options.lease
+          )) &&
         !isActiveExactPage(page, inventoryByPageId.get(page.browserPageId), options.lease)
     )
   if (options.lease.hostCapabilities?.includes(BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY)) {
@@ -129,21 +139,6 @@ function isPlacedAsObservedAtAttach(
   }
   const observed = pagePlacementsAtAttach.get(page.browserPageId)
   return observed !== undefined && sameRuntimeBrowserPlacement(observed, page.placement)
-}
-
-/** Retained pages match client identity across generations. Restored pages match paired device because client ids rotate per process.
- * Device matching prevents another or revoked/re-paired device from inheriting tabs; unmatched rows stay host-absent and closeable. */
-function isRecoverableByLease(
-  page: RuntimeBrowserClientPage,
-  lease: BrowserClientHostLeaseAuthority & { pairedDeviceId: string }
-): boolean {
-  if (isRestoredClientHostedBrowserPlacement(page.placement)) {
-    return page.pairedDeviceId === lease.pairedDeviceId
-  }
-  return (
-    page.placement.browserHostClientId === lease.browserHostClientId &&
-    page.placement.browserHostGeneration <= lease.browserHostGeneration
-  )
 }
 
 /** Keep routes minted by this runtime; restored pages re-resolve. Retire only workspace-gone; unavailable routes leave held rows for later attach. */
@@ -281,38 +276,5 @@ function commandAuthority(
     browserHostClientId: placement.browserHostClientId,
     browserHostGeneration: placement.browserHostGeneration,
     pageHostGeneration: placement.pageHostGeneration
-  }
-}
-
-function isActiveExactPage(
-  page: RuntimeBrowserClientPage,
-  inventory: BrowserClientHostedPageInventory | undefined,
-  lease: BrowserClientHostLeaseAuthority
-): boolean {
-  return Boolean(
-    inventory?.state === 'active' &&
-    inventory.authorityRuntimeId === lease.authorityRuntimeId &&
-    inventory.authorityEpoch === lease.authorityEpoch &&
-    inventory.browserHostClientId === page.placement.browserHostClientId &&
-    inventory.browserHostGeneration === page.placement.browserHostGeneration &&
-    inventory.pageHostGeneration === page.placement.pageHostGeneration &&
-    inventory.browserProfileId === page.browserProfileId &&
-    inventory.executionHostKey === page.executionHostKey
-  )
-}
-
-function assertInventoryAuthority(
-  page: RuntimeBrowserClientPage,
-  inventory: BrowserClientHostedPageInventory,
-  lease: BrowserClientHostLeaseAuthority
-): void {
-  if (
-    inventory.authorityRuntimeId !== lease.authorityRuntimeId ||
-    inventory.authorityEpoch !== lease.authorityEpoch ||
-    inventory.browserHostClientId !== page.placement.browserHostClientId ||
-    inventory.browserHostGeneration !== page.placement.browserHostGeneration ||
-    inventory.pageHostGeneration !== page.placement.pageHostGeneration
-  ) {
-    throw new Error('browser_client_page_reconciliation_authority_stale')
   }
 }

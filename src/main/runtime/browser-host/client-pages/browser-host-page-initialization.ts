@@ -1,313 +1,291 @@
-import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
+import { settleInitialization } from './browser-host-page-initialization-settlement'
+import { scheduleInitializationQueue } from './browser-host-page-initialization-queue'
 import {
-  type BrowserHostPageInitializationInput,
-  type Initialization,
-  issueInitializationCommand,
-  closeInitializationGuest,
-  closeInitializationReplacement,
-  sameInitializationPlacement,
-  awaitInitializationResult
-} from './browser-host-page-initialization-commands'
-export type { BrowserHostPageInitializationInput } from './browser-host-page-initialization-commands'
+  admitInitialization,
+  retireUnpublishedInitialization,
+  type InitializationAdmissionOwner
+} from './browser-host-page-initialization-admission'
+import { retireInitializationAuthority } from './browser-host-page-initialization-lifetime'
+import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type { RuntimeBrowserClientPlacement } from '../../../../shared/runtime-browser-placement'
 import type {
   BrowserHostLeaseIdentity,
   BrowserHostLeaseState
 } from '../leases/browser-host-lease-records'
-import type { BrowserHostPagePlacementRegistry } from '../reconciliation/browser-host-page-placement'
-import type { BrowserClientPageExecutionHostGrant } from './browser-host-client-page-creation'
+import type {
+  InitializationAdmission,
+  Initialization,
+  InitializationRecord,
+  InitializationQueue,
+  InitializationDisposition,
+  InitializationOutcome,
+  BrowserHostPageInitializationInput
+} from './browser-host-page-initialization-records'
 import {
-  clientPageCreationTimeout,
-  waitForClientPageCreationResult
-} from './browser-host-client-page-creation'
-import { browserHostClientProfileFor } from '../profiles/browser-host-client-profile-metadata'
+  canContinueInitialization,
+  sameInitializationPlacement
+} from './browser-host-page-initialization-records'
+import { closeInitializationGuest } from './browser-host-page-initialization-commands'
+import { observeInitializationAttach } from './browser-host-page-initialization-attachment'
+import {
+  runInitializationTransaction,
+  type InitializationTransactionAuthority
+} from './browser-host-page-initialization-transaction'
+export type { BrowserHostPageInitializationInput } from './browser-host-page-initialization-records'
 
-type InitializationQueue = { pending: Initialization[]; active: number }
-
-/** One permit covers the entire native transaction, including cancellation's destruction join. */
 export class BrowserHostPageInitializations {
-  private readonly operations = new Map<string, Initialization>()
+  private readonly records = new Map<string, InitializationRecord>()
   private readonly queues = new Map<symbol, InitializationQueue>()
+  private readonly attachments = new Map<string, BrowserHostLeaseState>()
 
   constructor(
-    private readonly placements: BrowserHostPagePlacementRegistry,
-    private readonly grants: Map<string, BrowserClientPageExecutionHostGrant>,
-    private readonly retirePlacement: (
-      browserPageId: string,
-      placement: RuntimeBrowserClientPlacement
-    ) => void,
-    private readonly requireState: (state: BrowserHostLeaseState) => void
+    private readonly authority: Omit<InitializationTransactionAuthority, 'current'>,
+    private readonly requireState: (state: BrowserHostLeaseState) => void,
+    private readonly retireLease: (state: BrowserHostLeaseState) => void
   ) {}
 
-  has(browserPageId: string): boolean {
-    return this.operations.has(browserPageId)
+  canContinue(
+    id: string,
+    expected: RuntimeBrowserClientPlacement,
+    lease: BrowserHostLeaseIdentity
+  ): boolean {
+    return canContinueInitialization(
+      this.records.get(id),
+      expected,
+      lease,
+      this.authority.placements.getPlacement(id)
+    )
   }
 
-  admit(state: BrowserHostLeaseState, input: BrowserHostPageInitializationInput): boolean {
-    if (!state.lease.hostCapabilities.includes(BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY)) {
-      throw new Error('browser_client_page_initialization_unsupported')
-    }
-    const existing = this.operations.get(input.browserPageId)
-    if (existing) {
-      if (
-        existing.unresolved &&
-        existing.cleanup &&
-        existing.state.lease.browserHostClientId === state.lease.browserHostClientId &&
-        existing.state.lease.pairedDeviceId === state.lease.pairedDeviceId
-      ) {
-        existing.unresolved = false
-        void existing.cleanup(state).then(
-          () => {
-            this.finish(existing, 'retained')
-            if (!input.signal?.aborted && input.isCurrent()) {
-              this.admit(state, { ...input, previous: undefined, pageHostGeneration: undefined })
-            }
-          },
-          () => {
-            existing.unresolved = true
-            input.settled?.('unknown')
-          }
-        )
-      }
-      return false
-    }
-    this.requireState(state)
-    if (input.signal?.aborted || !input.isCurrent()) {
-      return false
-    }
-    const host = state.lease
-    const reservation =
-      input.pageHostGeneration === undefined
-        ? this.placements.reserveNewClientPage(input.browserPageId, host)
-        : this.placements.reserveClientPage(input.browserPageId, host, input.pageHostGeneration)
-    const controller = new AbortController()
-    const abort = (): void => {
-      this.cancel(input.browserPageId, input.expected)
-    }
-    const operation: Initialization = {
-      state,
-      input,
-      reservation,
-      controller,
-      connectionToken: state.connectionToken,
-      running: false,
-      createIssued: false,
-      removeAbort: () => input.signal?.removeEventListener('abort', abort)
-    }
-    this.operations.set(input.browserPageId, operation)
-    input.signal?.addEventListener('abort', abort, { once: true })
-    const queue = this.queues.get(state.token) ?? { pending: [], active: 0 }
-    this.queues.set(state.token, queue)
-    queue.pending.push(operation)
-    this.drain(state.token, queue)
-    return true
+  observeAttach(
+    state: BrowserHostLeaseState,
+    inventory: readonly BrowserClientHostedPageInventory[] | undefined
+  ): void {
+    this.attachments.set(state.lease.browserHostClientId, state)
+    observeInitializationAttach(this.records, state, inventory, (operation) =>
+      this.cancelOperation(operation)
+    )
   }
 
-  cancel(browserPageId: string, expected: RuntimeBrowserClientPlacement): boolean {
-    const operation = this.operations.get(browserPageId)
-    if (
-      !operation ||
-      (operation.input.expected !== expected &&
-        !sameInitializationPlacement(operation.input.expected, expected))
-    ) {
-      return false
-    }
-    this.placements.cancelClientPageReservation(operation.reservation)
-    operation.controller.abort()
-    if (!operation.running) {
-      const queue = this.queues.get(operation.state.token)
-      const index = queue?.pending.indexOf(operation) ?? -1
-      if (index >= 0) {
-        queue?.pending.splice(index, 1)
-      }
-      if (operation.input.previous) {
-        operation.cleanup = (state) =>
-          closeInitializationGuest(operation, operation.input.previous!, state)
-        try {
-          void operation.cleanup().then(
-            () => this.finish(operation, 'retained'),
-            () => {
-              operation.unresolved = true
-              operation.input.settled?.('unknown')
-            }
-          )
-        } catch {
-          operation.unresolved = true
-          operation.input.settled?.('unknown')
+  resume(state: BrowserHostLeaseState): void {
+    for (const record of this.records.values()) {
+      const operation = record.operation
+      if (operation?.admission.state === state && operation.controller.signal.aborted) {
+        if (operation.executing) {
+          operation.resumeRequested = true
+        } else {
+          this.clean(operation)
         }
-      } else {
-        this.finish(operation, 'retained')
+      } else if (
+        !operation &&
+        record.closed &&
+        record.target &&
+        record.browserHostClientId === state.lease.browserHostClientId
+      ) {
+        this.startClosedCleanup(record, state)
+      }
+    }
+  }
+
+  admit(
+    state: BrowserHostLeaseState,
+    input: BrowserHostPageInitializationInput
+  ): InitializationDisposition {
+    return admitInitialization(this.admissionOwner(), state, input)
+  }
+
+  retireUnpublished(state: BrowserHostLeaseState, input: BrowserHostPageInitializationInput): void {
+    retireUnpublishedInitialization(this.admissionOwner(), state, input)
+  }
+
+  retireAuthority(state: BrowserHostLeaseState): void {
+    retireInitializationAuthority(
+      this.records,
+      this.queues,
+      this.attachments,
+      (admission) => this.releaseAdmission(admission),
+      state
+    )
+  }
+
+  private admissionOwner(): InitializationAdmissionOwner {
+    return {
+      records: this.records,
+      placements: this.authority.placements,
+      requireState: this.requireState,
+      observer: (state, input) => this.observer(state, input),
+      cancelOperation: (operation) => this.cancelOperation(operation),
+      releaseAdmission: (admission) => this.releaseAdmission(admission),
+      enqueue: (record, admission) => this.enqueue(record, admission),
+      resume: (state) => this.resume(state),
+      startClosedCleanup: (record, state) => this.startClosedCleanup(record, state)
+    }
+  }
+
+  cancel(id: string, expected: RuntimeBrowserClientPlacement): boolean {
+    const record = this.records.get(id)
+    if (!record || !sameInitializationPlacement(record.expected, expected)) {
+      return false
+    }
+    record.closed = true
+    if (record.successor) {
+      this.releaseAdmission(record.successor)
+      record.successor = undefined
+    }
+    if (record.operation) {
+      this.cancelOperation(record.operation)
+    } else {
+      const state = this.attachments.get(record.browserHostClientId)
+      if (state && record.target) {
+        this.startClosedCleanup(record, state)
+      } else if (!record.target) {
+        this.records.delete(id)
       }
     }
     return true
   }
 
   fence(state: BrowserHostLeaseState): void {
-    for (const operation of this.operations.values()) {
-      if (operation.state === state) {
-        this.cancel(operation.input.browserPageId, operation.input.expected)
+    for (const record of this.records.values()) {
+      if (record.operation?.admission.state === state) {
+        this.cancelOperation(record.operation)
       }
     }
   }
 
-  private drain(token: symbol, queue: InitializationQueue): void {
-    while (queue.active < 4 && queue.pending.length > 0) {
-      const operation = queue.pending.shift()!
-      operation.running = true
-      queue.active += 1
-      void this.run(operation).then(
-        (outcome) => this.finish(operation, outcome),
-        () => {
-          if (operation.closing) {
-            void operation.closing.then(
-              () => this.finish(operation, 'retained'),
-              () => {
-                operation.unresolved = true
-                operation.input.settled?.('unknown')
-              }
-            )
-          } else {
-            operation.unresolved = true
-            operation.input.settled?.('unknown')
-          }
-        }
-      )
+  private observer(
+    state: BrowserHostLeaseState,
+    input: BrowserHostPageInitializationInput
+  ): InitializationAdmission {
+    return { state, input, connectionToken: state.connectionToken, removeAbort: () => {} }
+  }
+
+  private enqueue(record: InitializationRecord, admission: InitializationAdmission): void {
+    const operation: Initialization = {
+      record,
+      admission,
+      controller: new AbortController(),
+      running: false,
+      executing: false,
+      detached: false
     }
-    if (queue.active === 0 && queue.pending.length === 0) {
-      this.queues.delete(token)
+    record.operation = operation
+    const queue = this.queues.get(admission.state.token) ?? {
+      pending: [],
+      active: 0,
+      scheduled: false
     }
+    this.queues.set(admission.state.token, queue)
+    queue.pending.push(operation)
+    this.schedule(admission.state.token, queue)
+  }
+
+  private schedule(token: symbol, queue: InitializationQueue): void {
+    scheduleInitializationQueue(
+      this.queues,
+      token,
+      queue,
+      (operation) =>
+        runInitializationTransaction(operation, {
+          ...this.authority,
+          current: (op) => this.current(op)
+        }),
+      (operation, outcome) => this.settle(operation, outcome)
+    )
   }
 
   private current(operation: Initialization): void {
-    this.requireState(operation.state)
+    const { admission, record } = operation
+    this.requireState(admission.state)
     if (
-      this.operations.get(operation.input.browserPageId) !== operation ||
+      operation.detached ||
+      record.operation !== operation ||
+      record.closed ||
       operation.controller.signal.aborted ||
-      operation.connectionToken !== operation.state.connectionToken ||
-      !operation.input.isCurrent()
+      admission.connectionToken !== admission.state.connectionToken ||
+      !admission.input.isCurrent()
     ) {
       throw new Error('browser_client_page_initialization_stale')
     }
   }
 
-  private async run(operation: Initialization): Promise<'published' | 'retained'> {
-    const { input, state, reservation } = operation
-    let releaseGrant: (() => void) | undefined
-    let published = false
-    try {
-      this.current(operation)
-      const executionHostKey = await input.resolveExecutionHostKey()
-      this.current(operation)
-      if (executionHostKey === null) {
-        return 'retained'
-      }
-      releaseGrant = state.executionHostGrants.retain(executionHostKey).release
-      if (input.previous) {
-        operation.cleanup = (cleanupState) =>
-          closeInitializationGuest(operation, input.previous!, cleanupState)
-        await awaitInitializationResult(operation.cleanup(), operation.controller.signal)
-        operation.cleanup = undefined
-        operation.closing = undefined
-      }
-      this.current(operation)
-      const previous = this.placements.getPlacement(input.browserPageId)
-      if (previous) {
-        if (!sameInitializationPlacement(previous, input.expected)) {
-          throw new Error('browser_page_placement_stale')
-        }
-        this.retirePlacement(input.browserPageId, previous)
-      }
-      operation.cleanup = async (cleanupState) => {
-        await closeInitializationReplacement(operation, cleanupState)
-        releaseGrant?.()
-        releaseGrant = undefined
-      }
-      await waitForClientPageCreationResult(
-        issueInitializationCommand(
-          operation,
-          () => this.current(operation),
-          reservation.placement.pageHostGeneration,
-          {
-            type: 'createPage',
-            browserProfileId: input.browserProfileId,
-            ...browserHostClientProfileFor(state.lease, input.browserProfileId),
-            executionHostKey,
-            workspaceId: input.workspaceId,
-            initialUrl: input.url
-          }
-        ),
-        clientPageCreationTimeout(input.creationTimeoutMs)
-      )
-      this.current(operation)
-      const result = await issueInitializationCommand(
-        operation,
-        () => this.current(operation),
-        reservation.placement.pageHostGeneration,
-        {
-          type: 'navigate',
-          url: input.url
-        }
-      )
-      this.current(operation)
-      if (typeof result.value !== 'string') {
-        throw new Error('browser_client_page_initialization_result_invalid')
-      }
-      const placement = this.placements.commitClientPageReservation(reservation)
-      const grant = { placement, executionHostKey, release: releaseGrant }
-      this.grants.set(input.browserPageId, grant)
-      try {
-        input.publish(placement, result.value, executionHostKey)
-        published = true
-      } catch (error) {
-        this.grants.delete(input.browserPageId)
-        this.placements.completePageRetirement(
-          this.placements.beginPageRetirement(input.browserPageId, placement)
-        )
-        throw error
-      }
-      return 'published'
-    } catch (error) {
-      if (operation.cleanup && !operation.createIssued) {
-        throw error
-      }
-      return 'retained'
-    } finally {
-      if (!published) {
-        this.placements.cancelClientPageReservation(reservation)
-        if (operation.createIssued) {
-          await operation.cleanup?.()
-        }
-        releaseGrant?.()
-      }
-    }
-  }
-
-  private finish(operation: Initialization, outcome: 'published' | 'retained'): void {
-    if (this.operations.get(operation.input.browserPageId) !== operation) {
+  private cancelOperation(operation: Initialization): void {
+    if (operation.detached) {
       return
     }
-    this.operations.delete(operation.input.browserPageId)
-    operation.removeAbort()
-    const queue = this.queues.get(operation.state.token)
-    if (operation.running && queue) {
-      queue.active -= 1
+    operation.controller.abort()
+    if (operation.admission.reservation) {
+      this.authority.placements.cancelClientPageReservation(operation.admission.reservation)
     }
-    operation.input.settled?.(outcome)
-    if (queue) {
-      this.drain(operation.state.token, queue)
+    if (!operation.running) {
+      const queue = this.queues.get(operation.admission.state.token)
+      const index = queue?.pending.indexOf(operation) ?? -1
+      if (index >= 0) {
+        queue?.pending.splice(index, 1)
+      }
+      this.clean(operation)
     }
   }
-}
 
-export function createBrowserHostPageInitializations(
-  placements: BrowserHostPagePlacementRegistry,
-  grants: Map<string, BrowserClientPageExecutionHostGrant>,
-  retirePlacement: (id: string, placement: RuntimeBrowserClientPlacement) => void,
-  requireLeaseState: (lease: BrowserHostLeaseIdentity) => BrowserHostLeaseState
-): BrowserHostPageInitializations {
-  return new BrowserHostPageInitializations(placements, grants, retirePlacement, (state) => {
-    if (requireLeaseState(state.lease) !== state) {
-      throw new Error('browser_host_lease_stale')
+  private clean(operation: Initialization): void {
+    if (operation.executing || operation.detached) {
+      return
     }
-  })
+    operation.executing = true
+    operation.resumeRequested = false
+    void Promise.resolve()
+      .then(() => closeInitializationGuest(operation))
+      .then(
+        () => this.settle(operation, operation.record.closed ? 'disposed' : 'retained-clean'),
+        () => this.settle(operation, 'cleanup-unknown')
+      )
+  }
+
+  private startClosedCleanup(record: InitializationRecord, state: BrowserHostLeaseState): void {
+    const admission = this.observer(state, {
+      browserPageId: record.browserPageId,
+      browserProfileId: record.browserProfileId,
+      workspaceId: record.workspaceId,
+      expected: record.expected,
+      url: '',
+      isCurrent: () => false,
+      resolveExecutionHostKey: async () => null,
+      publish: () => {}
+    })
+    const operation: Initialization = {
+      record,
+      admission,
+      controller: new AbortController(),
+      running: false,
+      executing: false,
+      detached: false
+    }
+    operation.controller.abort()
+    record.operation = operation
+    // A rebound native close is charged to the current dispatcher; no replacement is created.
+    const queue = this.queues.get(state.token) ?? { pending: [], active: 0, scheduled: false }
+    this.queues.set(state.token, queue)
+    queue.pending.push(operation)
+    this.schedule(state.token, queue)
+  }
+
+  private settle(operation: Initialization, outcome: InitializationOutcome): void {
+    settleInitialization(operation, outcome, {
+      authority: this.authority,
+      records: this.records,
+      queues: this.queues,
+      retireLease: this.retireLease,
+      clean: (op) => this.clean(op),
+      releaseAdmission: (admission) => this.releaseAdmission(admission),
+      enqueue: (record, admission) => this.enqueue(record, admission),
+      schedule: (token, queue) => this.schedule(token, queue)
+    })
+  }
+
+  private releaseAdmission(admission: InitializationAdmission): void {
+    admission.removeAbort()
+    if (admission.reservation) {
+      this.authority.placements.cancelClientPageReservation(admission.reservation)
+    }
+  }
 }

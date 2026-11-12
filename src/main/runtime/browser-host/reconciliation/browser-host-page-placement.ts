@@ -116,9 +116,14 @@ export class BrowserHostPagePlacementRegistry {
 
   reserveNewClientPage(
     browserPageId: string,
-    host: BrowserHostPlacementIdentity
+    host: BrowserHostPlacementIdentity,
+    minimumGeneration = 1
   ): BrowserClientPagePlacementReservation {
-    return this.reserveClientPage(browserPageId, host, this.nextPageGeneration)
+    return this.reserveClientPage(
+      browserPageId,
+      host,
+      Math.max(this.nextPageGeneration, minimumGeneration)
+    )
   }
 
   commitClientPageReservation(

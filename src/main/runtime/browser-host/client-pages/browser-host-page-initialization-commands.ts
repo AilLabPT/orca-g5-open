@@ -1,63 +1,44 @@
+import type { BrowserClientHostCommandEvent } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type {
-  BrowserClientHostedPageInventory,
-  BrowserClientHostCommandEvent
-} from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
-import type { RuntimeBrowserClientPlacement } from '../../../../shared/runtime-browser-placement'
-import type { BrowserHostLeaseState } from '../leases/browser-host-lease-records'
-import type { BrowserClientPagePlacementReservation } from '../reconciliation/browser-host-page-placement'
+  Initialization,
+  InitializationTarget
+} from './browser-host-page-initialization-records'
+import {
+  sameInitializationTarget,
+  notifyInitialization
+} from './browser-host-page-initialization-records'
 import { assertBrowserHostPageCommandAdmission } from '../commands/browser-host-page-command-admission'
-
-export type BrowserHostPageInitializationInput = {
-  browserPageId: string
-  browserProfileId: string
-  workspaceId: string
-  expected: RuntimeBrowserClientPlacement
-  url: string
-  pageHostGeneration?: number
-  previous?: BrowserClientHostedPageInventory
-  creationTimeoutMs?: number
-  signal?: AbortSignal
-  isCurrent(): boolean
-  resolveExecutionHostKey(): Promise<string | null>
-  publish(placement: RuntimeBrowserClientPlacement, url: string, executionHostKey: string): void
-  settled?(outcome: 'published' | 'retained' | 'unknown'): void
-}
-
-export type Initialization = {
-  input: BrowserHostPageInitializationInput
-  state: BrowserHostLeaseState
-  connectionToken: symbol
-  reservation: BrowserClientPagePlacementReservation
-  controller: AbortController
-  removeAbort(): void
-  running: boolean
-  createIssued: boolean
-  cleanup?: (state?: BrowserHostLeaseState) => Promise<void>
-  closing?: Promise<void>
-  unresolved?: boolean
-}
 
 export function issueInitializationCommand(
   operation: Initialization,
   current: () => void,
-  generation: number,
-  command: BrowserClientHostCommandEvent['command'],
-  resultAdmission: 'reserved-page' | 'reconciliation' = 'reserved-page'
+  command: BrowserClientHostCommandEvent['command']
 ) {
-  const { state, input } = operation
+  const { state, input, reservation } = operation.admission
   current()
+  if (!reservation) {
+    throw new Error('browser_page_reconciliation_reservation_stale')
+  }
   assertBrowserHostPageCommandAdmission(state.lease, command, (key) =>
     state.executionHostGrants.require(key)
   )
-  const issued = state.commandLedger!.issue({
-    browserPageId: input.browserPageId,
-    pageHostGeneration: generation,
-    command,
-    resultAdmission
-  })
-  if (command.type === 'createPage') {
-    operation.createIssued = true
-  }
+  const issued = state.commandLedger!.issue(
+    {
+      browserPageId: input.browserPageId,
+      pageHostGeneration: reservation.placement.pageHostGeneration,
+      command,
+      resultAdmission: 'reserved-page'
+    },
+    () => {
+      if (command.type === 'createPage') {
+        operation.record.target = {
+          authorityRuntimeId: state.lease.authorityRuntimeId,
+          authorityEpoch: state.lease.authorityEpoch,
+          ...reservation.placement
+        }
+      }
+    }
+  )
   return awaitInitializationResult(
     issued.result.then((result) => {
       if (result.status === 'failed') {
@@ -69,71 +50,64 @@ export function issueInitializationCommand(
   )
 }
 
-export function closeInitializationReplacement(
-  operation: Initialization,
-  state?: BrowserHostLeaseState
-): Promise<void> {
-  return closeInitializationGuest(
-    operation,
-    {
-      ...operation.reservation.placement,
-      authorityRuntimeId: operation.state.lease.authorityRuntimeId,
-      authorityEpoch: operation.state.lease.authorityEpoch
-    },
-    state
-  )
-}
-
-export function closeInitializationGuest(
-  operation: Initialization,
-  target: {
-    authorityRuntimeId: string
-    authorityEpoch: string
-    browserHostClientId: string
-    browserHostGeneration: number
-    pageHostGeneration: number
-  },
-  state = operation.state
-): Promise<void> {
-  if (operation.closing) {
-    return operation.closing
+export function closeInitializationGuest(operation: Initialization): Promise<void> {
+  const { record, admission } = operation
+  const target = record.target
+  if (!target || operation.detached) {
+    return Promise.resolve()
   }
+  if (operation.closing && sameInitializationTarget(operation.closing.target, target)) {
+    return operation.closing.result
+  }
+  const { state, input } = admission
   const issued = state.commandLedger!.issue({
-    browserPageId: operation.input.browserPageId,
+    browserPageId: record.browserPageId,
     pageHostGeneration: target.pageHostGeneration,
     command: { type: 'closePage', targetAuthority: target },
     resultAdmission: 'reconciliation'
   })
-  const closing = issued.result.then((result) => {
+  const absent = Promise.withResolvers<void>()
+  const timer = setTimeout(() => {
+    if (!operation.detached && record.operation === operation) {
+      notifyInitialization(record, 'cleanup-unknown')
+    }
+  }, input.closeTimeoutMs ?? 15_000)
+  const raw = issued.result.then((result) => {
     if (result.status === 'failed') {
       throw new Error(result.errorCode)
     }
-    state.commandLedger!.retirePage(operation.input.browserPageId, target.pageHostGeneration)
-  })
-  operation.closing = closing
-  void closing.catch(() => {
-    if (operation.closing === closing) {
-      operation.closing = undefined
+    if (!operation.detached) {
+      state.commandLedger!.retirePage(record.browserPageId, target.pageHostGeneration)
     }
   })
-  return closing
+  const result = Promise.race([raw, absent.promise])
+    .then(() => {
+      if (!operation.detached && sameInitializationTarget(record.target, target)) {
+        operation.retiredTarget = target
+        record.target = undefined
+      }
+    })
+    .finally(() => {
+      clearTimeout(timer)
+      if (operation.closing?.result === result) {
+        operation.closing = undefined
+      }
+    })
+  operation.closing = { target, absent: () => absent.resolve(), result }
+  return result
 }
 
-export function sameInitializationPlacement(
-  left: {
-    kind: string
-    browserHostClientId?: string
-    browserHostGeneration?: number
-    pageHostGeneration?: number
-  },
-  right: RuntimeBrowserClientPlacement
-): left is RuntimeBrowserClientPlacement {
-  return (
-    left.kind === 'client' &&
-    left.browserHostClientId === right.browserHostClientId &&
-    left.browserHostGeneration === right.browserHostGeneration &&
-    left.pageHostGeneration === right.pageHostGeneration
-  )
+export function forgetAbsentInitializationTarget(
+  operation: Initialization,
+  target: InitializationTarget
+): void {
+  if (sameInitializationTarget(operation.record.target, target)) {
+    operation.retiredTarget = target
+    operation.record.target = undefined
+  }
+  if (operation.closing && sameInitializationTarget(operation.closing.target, target)) {
+    operation.closing.absent()
+  }
 }
 
 export async function awaitInitializationResult<T>(

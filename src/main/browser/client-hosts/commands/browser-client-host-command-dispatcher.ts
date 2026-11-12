@@ -60,7 +60,10 @@ export class BrowserClientHostCommandDispatcher {
     this.cancelInitialization = options.cancelInitialization
     const limits = resolveDispatcherLimits(options)
     this.limits = limits
-    this.resultCache = new BrowserClientHostCommandResultCache(limits)
+    this.resultCache = new BrowserClientHostCommandResultCache(
+      limits,
+      options.releaseInitializationReceipt
+    )
     this.closedSettlement = new Promise((resolve) => {
       this.resolveClosedSettlement = resolve
     })

@@ -104,8 +104,8 @@ function harness(
   })
   const commands: { browserPageId: string; type: string; pageHostGeneration: number }[] = []
   const authority = {
-    hasClientPageInitialization: () => false,
-    admitClientPageInitialization: () => false,
+    canContinueClientPageInitialization: () => false,
+    admitClientPageInitialization: () => 'stale' as const,
     authorityRuntimeId: 'runtime-a',
     authorityEpoch: 'epoch-a',
     getPlacement: vi.fn((browserPageId: string) => placements.get(browserPageId)),

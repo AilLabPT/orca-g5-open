@@ -132,7 +132,7 @@ export class BrowserClientPageCommandExecutor {
       case 'reclaimPage':
         return this.reconcilePage(event, signal)
       case 'closePage':
-        if (this.initializers.has(event.browserPageId)) {
+        if (this.initializers.ownsClose(event)) {
           return this.initializers.close(event, signal)
         }
         return this.reconcilePage(event, signal)
@@ -227,6 +227,7 @@ export class BrowserClientPageCommandExecutor {
     if (this.closed || !this.authorityTransitioning || !input.authorityConnectionIdentity) {
       throw new Error('browser_client_page_authority_transition_unavailable')
     }
+    this.initializers.retireCleanupReceipts()
     this.authority = pageAuthorityIdentity(input)
     this.authorityTransitioning = false
   }
@@ -253,6 +254,10 @@ export class BrowserClientPageCommandExecutor {
       () => this.navigationFence.assertAvailable(this.closed || this.authorityTransitioning),
       (id, generation) => this.retirePage(id, generation)
     ).createPage(event, signal)
+  }
+
+  releaseInitializationReceipt(event: BrowserClientHostCommandEvent): void {
+    this.initializers.releaseReceipt(event)
   }
 
   cancelInitialization(event: BrowserClientHostCommandEvent): boolean {

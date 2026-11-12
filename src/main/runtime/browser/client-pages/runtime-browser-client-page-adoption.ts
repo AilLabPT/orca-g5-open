@@ -1,10 +1,7 @@
 import { sameRuntimeBrowserPlacement } from '../../../../shared/runtime-browser-placement'
+import type { RuntimeBrowserClientPlacement } from '../../../../shared/runtime-browser-placement'
+import { admitModernAdoptions } from './runtime-browser-client-page-modern-adoption'
 import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
-import {
-  RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT,
-  RESTORED_CLIENT_HOSTED_EXECUTION_HOST_KEY
-} from './client-hosted-browser-page-persistence'
-import { admitRuntimeBrowserPageInitialization } from './runtime-browser-page-initialization'
 import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type { BrowserHostLease } from '../../browser-host/leases/browser-host-lease-records'
 import type { BrowserHostLeaseRegistry } from '../../browser-host/leases/browser-host-lease-registry'
@@ -22,8 +19,8 @@ type AdoptionAuthority = Pick<
   | 'authorityEpoch'
   | 'adoptClientPages'
   | 'getPlacement'
-  | 'hasClientPageInitialization'
   | 'admitClientPageInitialization'
+  | 'retireUnpublishedClientPage'
 >
 
 /** Unavailable routes leave real workspaces/pages alive; only workspace-gone proves there is nowhere to restore. */
@@ -69,6 +66,11 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
     return NOTHING_TO_ADOPT
   }
   const inventoryByPageId = new Map(inventory.map((page) => [page.browserPageId, page]))
+  const modern = options.lease.hostCapabilities.includes(
+    BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY
+  )
+  const pending = (page: BrowserClientHostedPageInventory): boolean =>
+    page.state !== 'active' || (!modern && page.currentUrl === undefined)
   const adoptable = selectAdoptableClientHostedPages({
     inventory,
     browserHostClientId: options.lease.browserHostClientId,
@@ -81,7 +83,7 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
         page.workspaceId === inventory.workspaceId &&
         page.browserProfileId === inventory.browserProfileId &&
         (isRestoredClientHostedBrowserPlacement(page.placement) ||
-          ((inventory.state !== 'active' || inventory.currentUrl === undefined) &&
+          (pending(inventory) &&
             page.placement.browserHostClientId === inventory.browserHostClientId &&
             page.placement.browserHostGeneration === inventory.browserHostGeneration &&
             page.placement.pageHostGeneration === inventory.pageHostGeneration))
@@ -96,7 +98,7 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
         !isRestoredClientHostedBrowserPlacement(page.placement) &&
         !(
           observed &&
-          (observed.state !== 'active' || observed.currentUrl === undefined) &&
+          pending(observed) &&
           page.pairedDeviceId === options.lease.pairedDeviceId &&
           page.workspaceId === observed.workspaceId &&
           page.browserProfileId === observed.browserProfileId &&
@@ -150,6 +152,7 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
     return { adoptedPageIds: [], unadoptedPageIds: settle(adoptable) }
   }
   const intentsByPageId = new Map(intents.map((intent) => [intent.browserPageId, intent]))
+  const adoptedPlacements = new Map<string, RuntimeBrowserClientPlacement>()
   const adoptedPageIds = new Set(
     await options.authority.adoptClientPages(
       {
@@ -159,7 +162,7 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
         pairedDeviceId: options.lease.pairedDeviceId
       },
       intents,
-      options.signal ? { signal: options.signal } : {}
+      { signal: options.signal, onAdopted: (id, placement) => adoptedPlacements.set(id, placement) }
     )
   )
   const byPageId = new Map(adoptable.map((page) => [page.browserPageId, page]))
@@ -168,7 +171,7 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
   for (const browserPageId of adoptedPageIds) {
     const page = byPageId.get(browserPageId)
     const intent = intentsByPageId.get(browserPageId)
-    const placement = options.authority.getPlacement(browserPageId)
+    const placement = adoptedPlacements.get(browserPageId)
     if (!page || !intent || placement?.kind !== 'client') {
       continue
     }
@@ -176,9 +179,20 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
       const restored = options.pages.getPage(browserPageId)
       const expected = captured.get(browserPageId)
       if (
-        expected &&
-        (!restored || !sameRuntimeBrowserPlacement(restored.placement, expected.placement))
+        (expected &&
+          (!restored || !sameRuntimeBrowserPlacement(restored.placement, expected.placement))) ||
+        (!expected && restored !== undefined)
       ) {
+        options.authority.retireUnpublishedClientPage(options.lease, {
+          browserPageId,
+          browserProfileId: page.browserProfileId,
+          workspaceId: page.workspaceId,
+          expected: placement,
+          url: intent.url ?? adoptedPageUrl(page),
+          isCurrent: () => false,
+          resolveExecutionHostKey: async () => null,
+          publish: () => {}
+        })
         continue
       }
       if (restored && isRestoredClientHostedBrowserPlacement(restored.placement)) {
@@ -218,70 +232,4 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
 
 function adoptedPageUrl(page: BrowserClientHostedPageInventory): string {
   return page.currentUrl ?? 'about:blank'
-}
-
-function admitModernAdoptions(
-  options: RuntimeBrowserClientPageAdoptionOptions,
-  candidates: readonly AdoptableClientHostedPage[]
-): RuntimeBrowserClientPageAdoptionResult {
-  const remaining = new Set(candidates.map((page) => page.browserPageId))
-  const published: string[] = []
-  const ordered = [...candidates].sort((a, b) => a.pageHostGeneration - b.pageHostGeneration)
-  const highest = ordered.reduce((value, page) => Math.max(value, page.pageHostGeneration), 0)
-  for (const [index, inventory] of ordered.entries()) {
-    if (options.signal?.aborted) {
-      continue
-    }
-    let page = options.pages.getPage(inventory.browserPageId)
-    if (!page) {
-      page = options.pages.publishClientPage({
-        browserPageId: inventory.browserPageId,
-        workspaceId: inventory.workspaceId,
-        browserProfileId: inventory.browserProfileId,
-        pairedDeviceId: options.lease.pairedDeviceId,
-        placement: RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT,
-        executionHostKey: RESTORED_CLIENT_HOSTED_EXECUTION_HOST_KEY,
-        // No saved owner exists for an imported URL omitted by an older client.
-        url: inventory.currentUrl ?? 'about:blank',
-        loading: false,
-        active: false
-      })
-      options.notifyWorkspace(page.workspaceId)
-    }
-    try {
-      admitRuntimeBrowserPageInitialization({
-        ...options,
-        page,
-        previous: inventory,
-        pageHostGeneration: highest + index + 1,
-        url: inventory.currentUrl ?? page.url,
-        creationTimeoutMs: 15_000,
-        releaseUnrecoverablePage: (held) => {
-          if (options.pages.retirePage(held.browserPageId, held.placement)) {
-            options.notifyWorkspace(held.workspaceId)
-          }
-        },
-        settled: (outcome) => {
-          if (options.signal?.aborted) {
-            return
-          }
-          if (outcome === 'published') {
-            published.push(inventory.browserPageId)
-          }
-          if (outcome === 'published' || !options.pages.getPage(inventory.browserPageId)) {
-            remaining.delete(inventory.browserPageId)
-          }
-          if (remaining.size === 0) {
-            options.onReconciled?.()
-          }
-        }
-      })
-    } catch (error) {
-      console.warn('[browser-host-lease] client page initialization admission failed:', {
-        browserPageId: inventory.browserPageId,
-        error
-      })
-    }
-  }
-  return { adoptedPageIds: published, unadoptedPageIds: [...remaining] }
 }

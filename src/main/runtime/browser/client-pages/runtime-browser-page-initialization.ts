@@ -1,3 +1,7 @@
+import type {
+  InitializationOutcome,
+  InitializationDisposition
+} from '../../browser-host/client-pages/browser-host-page-initialization-records'
 import { sameRuntimeBrowserPlacement } from '../../../../shared/runtime-browser-placement'
 import type { BrowserHostLeaseRegistry } from '../../browser-host/leases/browser-host-lease-registry'
 import type { BrowserHostLeaseIdentity } from '../../browser-host/leases/browser-host-lease-records'
@@ -17,20 +21,25 @@ export function admitRuntimeBrowserPageInitialization(input: {
   pageHostGeneration?: number
   url: string
   creationTimeoutMs?: number
+  closeTimeoutMs?: number
+  claim?(): void
   resolveExecutionHostKey(workspaceId: string): Promise<BrowserExecutionHostKeyResolution>
   notifyWorkspace(workspaceId: string): void
   releaseUnrecoverablePage?(page: RuntimeBrowserClientPage): void
-  settled?(outcome: 'published' | 'retained' | 'unknown'): void
+  settled?(outcome: InitializationOutcome): void
   signal?: AbortSignal
-}): boolean {
+}): InitializationDisposition {
   const { page } = input
   const isCurrent = (): boolean => {
     const current = input.pages.getPage(page.browserPageId)
-    return Boolean(
-      current &&
-      current.workspaceId === page.workspaceId &&
-      current.browserProfileId === page.browserProfileId &&
-      sameRuntimeBrowserPlacement(current.placement, page.placement)
+    return (
+      (!current && input.claim !== undefined) ||
+      Boolean(
+        current &&
+        current.workspaceId === page.workspaceId &&
+        current.browserProfileId === page.browserProfileId &&
+        sameRuntimeBrowserPlacement(current.placement, page.placement)
+      )
     )
   }
   return input.authority.admitClientPageInitialization(input.lease, {
@@ -44,6 +53,8 @@ export function admitRuntimeBrowserPageInitialization(input: {
       ? {}
       : { pageHostGeneration: input.pageHostGeneration }),
     signal: input.signal,
+    claim: input.claim,
+    closeTimeoutMs: input.closeTimeoutMs,
     creationTimeoutMs: input.creationTimeoutMs,
     isCurrent,
     resolveExecutionHostKey: async () => {
@@ -68,6 +79,10 @@ export function admitRuntimeBrowserPageInitialization(input: {
       )
       input.pages.updatePage(page.browserPageId, placement, { url, loading: false })
       input.notifyWorkspace(page.workspaceId)
+      const published = input.pages.getPage(page.browserPageId)
+      if (!published || !sameRuntimeBrowserPlacement(published.placement, placement)) {
+        throw new Error('browser_page_placement_stale')
+      }
     },
     settled: input.settled
   })

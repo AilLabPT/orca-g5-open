@@ -53,6 +53,7 @@ export type DispatcherOptions = {
   authority: BrowserClientHostLeaseAuthority
   handler: CommandHandler
   cancelInitialization?: (event: BrowserClientHostCommandEvent) => boolean
+  releaseInitializationReceipt?: (event: BrowserClientHostCommandEvent) => void
   maxPages?: number
   maxActiveCommands?: number
   maxConcurrentHandlers?: number

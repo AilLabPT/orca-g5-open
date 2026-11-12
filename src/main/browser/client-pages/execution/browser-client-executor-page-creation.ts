@@ -56,6 +56,9 @@ export class BrowserClientExecutorPageCreation {
       }
       await creation
     } catch (error) {
+      if (initializer && !isBrowserClientPageCleanupFailure(error)) {
+        await this.initializers.creationFailed(initializer)
+      }
       if (isBrowserClientPageCleanupFailure(error)) {
         this.failedPages.set(event.browserPageId, unknownInventory)
       }

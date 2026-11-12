@@ -18,6 +18,7 @@ export type PageInitialization = {
   creation?: Promise<void>
   page?: BrowserClientRetainedPage
   failedCleanup?: () => Promise<void>
+  cleaned?: boolean
 }
 
 export class BrowserClientPageInitializations {
@@ -31,7 +32,8 @@ export class BrowserClientPageInitializations {
   ) {}
 
   has(browserPageId: string): boolean {
-    return this.operations.has(browserPageId)
+    const initializer = this.operations.get(browserPageId)
+    return initializer !== undefined && !initializer.cleaned
   }
 
   begin(event: BrowserClientHostCommandEvent): PageInitialization | undefined {
@@ -41,6 +43,40 @@ export class BrowserClientPageInitializations {
     const initializer = { event, controller: new AbortController() }
     this.operations.set(event.browserPageId, initializer)
     return initializer
+  }
+
+  ownsClose(event: BrowserClientHostCommandEvent): boolean {
+    const initializer = this.operations.get(event.browserPageId)
+    return Boolean(
+      event.command.type === 'closePage' &&
+      initializer &&
+      sameBrowserClientPageAuthority(initializer.event, event.command.targetAuthority) &&
+      event.pageHostGeneration === initializer.event.pageHostGeneration
+    )
+  }
+
+  async creationFailed(initializer: PageInitialization): Promise<void> {
+    await this.cleanupInitializer(initializer)
+  }
+
+  retireCleanupReceipts(): void {
+    for (const [id, initializer] of this.operations) {
+      if (initializer.cleaned) {
+        this.operations.delete(id)
+      }
+    }
+  }
+
+  releaseReceipt(event: BrowserClientHostCommandEvent): void {
+    const initializer = this.operations.get(event.browserPageId)
+    if (
+      initializer?.cleaned &&
+      sameBrowserClientPageAuthority(initializer.event, event) &&
+      initializer.event.pageHostGeneration === event.pageHostGeneration &&
+      (event.command.type === 'createPage' || event.command.type === 'navigate')
+    ) {
+      this.operations.delete(event.browserPageId)
+    }
   }
 
   cancel(event: BrowserClientHostCommandEvent): boolean {
@@ -127,6 +163,9 @@ export class BrowserClientPageInitializations {
       }
     }
     this.failedPages.delete(initializer.event.browserPageId)
+    initializer.cleaned = true
+    initializer.creation = undefined
+    initializer.page = undefined
   }
 
   async close(event: BrowserClientHostCommandEvent, signal: AbortSignal): Promise<void> {
