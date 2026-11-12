@@ -4,6 +4,7 @@ import type { RuntimeBrowserClientPlacement } from '../../../../shared/runtime-b
 import type { BrowserHostLeaseState } from '../leases/browser-host-lease-records'
 import {
   sameInitializationPlacement,
+  initializationCleanupServesCurrentDemand,
   type InitializationAdmission,
   type BrowserHostPageInitializationInput,
   type Initialization,
@@ -21,6 +22,30 @@ export abstract class BrowserHostPageInitializationControls {
     protected readonly changed: (workspaceId: string) => void
   ) {}
   protected abstract cancelOperation(operation: Initialization): void
+  protected abstract clean(operation: Initialization): void
+  resume(state: BrowserHostLeaseState): void {
+    for (const record of this.records.values()) {
+      const operation = record.operation
+      if (operation?.admission.state === state && operation.controller.signal.aborted) {
+        if (initializationCleanupServesCurrentDemand(operation)) {
+          continue
+        }
+        if (operation.executing) {
+          operation.cleanupRequested = state.connectionToken
+        } else {
+          this.clean(operation)
+        }
+      } else if (
+        !operation &&
+        record.closed &&
+        record.target &&
+        record.browserHostClientId === state.lease.browserHostClientId
+      ) {
+        this.startClosedCleanup(record, state)
+      }
+    }
+  }
+
   protected abstract releaseAdmission(admission: InitializationAdmission): void
   protected abstract startClosedCleanup(
     record: InitializationRecord,
@@ -158,6 +183,7 @@ export abstract class BrowserHostPageInitializationControls {
     }
     if (record.operation) {
       this.cancelOperation(record.operation)
+      this.resume(record.operation.admission.state)
     }
     this.changed(record.workspaceId)
     return true
@@ -167,6 +193,11 @@ export abstract class BrowserHostPageInitializationControls {
     const record = this.records.get(id)
     if (!record || !sameInitializationPlacement(record.expected, expected)) {
       return false
+    }
+    if (record.legacyAttempt) {
+      record.closed = true
+      record.legacyAttempt.cancel()
+      return true
     }
     if (record.authorityRetired && !record.operation && !record.successor) {
       this.completion.settle(record, 'disposed')
@@ -180,6 +211,7 @@ export abstract class BrowserHostPageInitializationControls {
     }
     if (record.operation) {
       this.cancelOperation(record.operation)
+      this.resume(record.operation.admission.state)
     } else {
       const state = this.attachments.get(record.browserHostClientId)
       if (state && record.target) {

@@ -91,9 +91,11 @@ it('does not resurrect a closed queued import from the next authenticated invent
       },
       page
     )
-    expect(h.commands.some((event) => event.browserPageId === 'queued')).toBe(false)
-    h.release('a')
-    await h.published('a')
+    expect(
+      h.commands.some(
+        (event) => event.browserPageId === 'queued' && event.command.type !== 'closePage'
+      )
+    ).toBe(false)
     await cleanup.started
     const next = h.attach({ inventory })
     first.abort()
@@ -105,6 +107,8 @@ it('does not resurrect a closed queued import from the next authenticated invent
       )
     ).toBe(false)
     cleanup.release()
+    h.release('a')
+    await h.published('a')
     for (const id of ids.slice(0, 4)) {
       h.release(id)
     }

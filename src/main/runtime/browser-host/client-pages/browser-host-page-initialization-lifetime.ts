@@ -25,11 +25,15 @@ export function retireInitializationAuthority(
     if (record.scope !== state) {
       continue
     }
+    record.legacyAttempt?.cancel()
+    record.legacyAttempt = undefined
     const operation = record.operation
     if (operation?.admission.state === state) {
       operation.removePreparation?.()
       operation.removePreparation = undefined
       operation.detached = true
+      operation.cleanupRequested = undefined
+      operation.cleanupAttempt = undefined
       operation.controller.abort()
       releaseAdmission(operation.admission)
       operation.releaseGrant?.()

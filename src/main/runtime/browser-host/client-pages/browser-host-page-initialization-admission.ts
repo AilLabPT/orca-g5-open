@@ -46,6 +46,9 @@ export function admitInitialization(
   if (record && record.pairedDeviceId !== state.lease.pairedDeviceId) {
     return 'stale'
   }
+  if (record?.legacyAttempt) {
+    return 'stale'
+  }
   if (record?.closed) {
     owner.join(state, record)
     record.observer = owner.observer(state, input)

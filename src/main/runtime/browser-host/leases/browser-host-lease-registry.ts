@@ -1,3 +1,4 @@
+import type { BrowserHostLegacyPageRecoveryInput } from '../client-pages/browser-host-page-legacy-recovery'
 import { createBrowserHostLeaseControllers } from './browser-host-lease-controllers'
 import type { BrowserHostLeaseRegistryOptions } from './browser-host-lease-registry-options'
 import type { BrowserHostPageInitializationInput } from '../client-pages/browser-host-page-initialization'
@@ -192,12 +193,12 @@ export class BrowserHostLeaseRegistry {
     return this.controllers.initializations
   }
 
-  canContinueClientPageInitialization(
-    id: string,
-    expected: RuntimeBrowserClientPlacement,
-    identity: BrowserHostLeaseIdentity
-  ): boolean {
-    return this.controllers.initializations.canContinue(id, expected, identity)
+  claimLegacyClientPageRecovery(
+    identity: BrowserHostLeaseIdentity,
+    input: BrowserHostLegacyPageRecoveryInput
+  ) {
+    const state = this.requireLeaseState(identity)
+    return this.controllers.initializations.claimLegacyRecovery(state, input)
   }
 
   cancelClientPageInitialization(

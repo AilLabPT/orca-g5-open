@@ -1,3 +1,8 @@
+import {
+  closeUncommittedClientPage,
+  retireUncommittedClientPage
+} from './browser-host-uncommitted-client-page'
+import type { BrowserHostLegacyPageRecoveryClaim } from './browser-host-page-legacy-recovery'
 import type { BrowserHostPageInitializations } from './browser-host-page-initialization'
 import { createBrowserHostClientPageRequest } from './browser-host-client-page-request'
 import type {
@@ -32,6 +37,7 @@ export type BrowserHostClientPageCreateOptions = {
   timeoutMs?: number
   workspaceId?: string
   signal?: AbortSignal
+  legacyRecovery?: BrowserHostLegacyPageRecoveryClaim
   committed?(placement: RuntimeBrowserClientPlacement): void
 }
 
@@ -94,7 +100,11 @@ export async function createBrowserHostClientPage(
       if (dependencies.executionHostGrants.has(options.browserPageId)) {
         throw new Error('browser_page_replacement_requires_retirement')
       }
-      dependencies.initializations.assertCreationAdmission(options.browserPageId)
+      if (options.legacyRecovery) {
+        options.legacyRecovery.admit(options.browserPageId, currentState, request.cancel)
+      } else {
+        dependencies.initializations.assertCreationAdmission(options.browserPageId)
+      }
       dependencies.pagePlacements.assertPlacementAdmission(options.browserPageId)
       reservation = dependencies.pagePlacements.reserveNewClientPage(options.browserPageId, lease)
       grant = currentState.executionHostGrants.retain(options.executionHostKey)
@@ -152,6 +162,7 @@ export async function createBrowserHostClientPage(
     }
     request.current()
     dependencies.requireLeaseState(lease)
+    options.legacyRecovery?.validate(state)
     placement = dependencies.pagePlacements.commitClientPageReservation(reservation!)
     committedGrant = {
       placement,
@@ -159,7 +170,11 @@ export async function createBrowserHostClientPage(
       release: grant!.release
     }
     dependencies.executionHostGrants.set(options.browserPageId, committedGrant)
-    options.committed?.(placement)
+    if (options.legacyRecovery) {
+      options.legacyRecovery.commit(state, placement, () => options.committed?.(placement!))
+    } else {
+      options.committed?.(placement)
+    }
     return placement
   } catch (error) {
     if (reservation && state) {
@@ -169,7 +184,17 @@ export async function createBrowserHostClientPage(
       ) {
         dependencies.executionHostGrants.delete(options.browserPageId)
       }
-      if (createIssued && modern) {
+      if (createIssued && options.legacyRecovery) {
+        if (
+          options.legacyRecovery.failed(
+            reservation.placement,
+            options.executionHostKey,
+            grant!.release
+          )
+        ) {
+          grant = undefined
+        }
+      } else if (createIssued && modern) {
         // Exact cleanup takes the slot and grant before the request gives up its reservation.
         dependencies.initializations.retireUnpublished(
           state,
@@ -209,6 +234,7 @@ export async function createBrowserHostClientPage(
     throw error
   } finally {
     request.dispose()
+    options.legacyRecovery?.finish()
   }
 }
 
@@ -243,51 +269,5 @@ export async function waitForClientPageCreationResult(
     if (timeout) {
       clearTimeout(timeout)
     }
-  }
-}
-
-export function closeUncommittedClientPage(
-  state: BrowserHostLeaseState,
-  browserPageId: string,
-  placement: RuntimeBrowserClientPlacement
-): void {
-  const ledger = state.commandLedger
-  if (!ledger) {
-    return
-  }
-  try {
-    const close = ledger.issue({
-      browserPageId,
-      pageHostGeneration: placement.pageHostGeneration,
-      command: {
-        type: 'closePage',
-        targetAuthority: {
-          authorityRuntimeId: state.lease.authorityRuntimeId,
-          authorityEpoch: state.lease.authorityEpoch,
-          browserHostClientId: placement.browserHostClientId,
-          browserHostGeneration: placement.browserHostGeneration,
-          pageHostGeneration: placement.pageHostGeneration
-        }
-      },
-      resultAdmission: 'reserved-page'
-    })
-    void close.result.then(
-      () => retireUncommittedClientPage(ledger, browserPageId, placement.pageHostGeneration),
-      () => retireUncommittedClientPage(ledger, browserPageId, placement.pageHostGeneration)
-    )
-  } catch {
-    retireUncommittedClientPage(ledger, browserPageId, placement.pageHostGeneration)
-  }
-}
-
-function retireUncommittedClientPage(
-  ledger: NonNullable<BrowserHostLeaseState['commandLedger']>,
-  browserPageId: string,
-  pageHostGeneration: number
-): void {
-  try {
-    ledger.retirePage(browserPageId, pageHostGeneration)
-  } catch {
-    // Best-effort close converges through authenticated inventory reconciliation.
   }
 }

@@ -147,20 +147,68 @@ it('full retirement preserves another live scope successor and an unrelated host
   }
 })
 
-it('consumes a retired modern continuation when a legacy recovery replaces its row', async () => {
+async function retirePositiveContinuation(h: ReturnType<typeof createRecoveryLoop>) {
+  let current = h.attach()
+  await h.published('slow')
+  h.fence()
+  current.abort()
+  await current.completion
+  await h.restartClient()
+  const started = h.hold('slow')
+  current = h.attach({ inventory: [] })
+  await started
+  const saved = h.pages.getPage('slow')!
+  expect(saved.placement.pageHostGeneration).toBeGreaterThan(0)
+  h.fence()
+  current.abort()
+  await current.completion
+  await h.restartClient()
+  h.release('slow')
+  return saved
+}
+
+it('preserves a positive rotated-client continuation through legacy capacity failure and consumes it only on replacement', async () => {
   const h = createRecoveryLoop(['slow'])
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
   try {
-    const started = h.hold('slow')
-    const first = h.attach()
-    await started
-    h.fence()
-    first.abort()
-    await first.completion
-    await h.restartClient()
-    h.release('slow')
+    const saved = await retirePositiveContinuation(h)
+    const placed = Array.from({ length: 256 }, (_, i) => h.authority.placeServerPage(`full-${i}`))
+    const replaced = vi.spyOn(h.pages, 'replaceClientPagePlacement')
+    const failed = h.attach({ hostId: 'client-b', modern: false, inventory: [] })
+    await vi.waitFor(() =>
+      expect(warning).toHaveBeenCalledWith(
+        '[browser-host-lease] client page recovery failed:',
+        expect.objectContaining({ browserPageId: 'slow' })
+      )
+    )
+    expect(h.pages.getPage('slow')?.placement).toEqual(saved.placement)
+    expect(
+      h.authority.clientPageInitializations.canContinue(
+        'slow',
+        saved.placement,
+        h.authority.select('client-b')
+      )
+    ).toBe(true)
+    const last = placed[255]
+    h.authority.completePageRetirement(h.authority.beginPageRetirement('full-255', last))
+    failed.abort()
+    await failed.completion
     const legacy = h.attach({ modern: false, inventory: [] })
-    await h.published('slow')
+    await vi.waitFor(() =>
+      expect(h.pages.getPage('slow')?.placement.browserHostClientId).toBe('client-b')
+    )
     const legacyPlacement = h.pages.getPage('slow')!.placement
+    expect(replaced).toHaveBeenCalledTimes(1)
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    expect(
+      h.authority.claimLegacyClientPageRecovery(h.authority.select('client-b'), {
+        browserPageId: 'slow',
+        browserProfileId: 'profile-a',
+        workspaceId: saved.workspaceId,
+        expected: saved.placement,
+        isCurrent: () => false
+      })
+    ).toBeUndefined()
     legacy.abort()
     await legacy.completion
     await h.restartClient()
@@ -175,6 +223,186 @@ it('consumes a retired modern continuation when a legacy recovery replaces its r
     expect(h.executor.snapshotPageInventory()).toHaveLength(1)
     modern.abort()
     await modern.completion
+  } finally {
+    warning.mockRestore()
+    await h.close()
+  }
+})
+
+it('keeps a timed-out legacy replacement in exact cleanup before retrying its original positive row', async () => {
+  const h = createRecoveryLoop(['slow'])
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  const result = Promise.withResolvers<void>()
+  const issued = Promise.withResolvers<void>()
+  try {
+    const saved = await retirePositiveContinuation(h)
+    const create = h.authority.createClientPage.bind(h.authority)
+    const bounded = vi
+      .spyOn(h.authority, 'createClientPage')
+      .mockImplementation((input) => create({ ...input, timeoutMs: 20 }))
+    h.hooks.beforeResult = async (event) => {
+      if (event.command.type === 'createPage' && event.browserPageId === 'slow') {
+        issued.resolve()
+        await result.promise
+      }
+    }
+    h.native.renderer.retirePage.mockRejectedValueOnce(new Error('cleanup-reply-lost'))
+    h.attach({ hostId: 'client-b', modern: false, inventory: [] })
+    await issued.promise
+    await vi.waitFor(() =>
+      expect(h.results).toContainEqual({ id: 'slow', type: 'closePage', status: 'failed' })
+    )
+    expect(h.pages.getPage('slow')?.placement).toEqual(saved.placement)
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    expect(h.executor.snapshotPageInventory()).toMatchObject([
+      { browserPageId: 'slow', state: 'outcomeUnknown' }
+    ])
+    // Ordinary duplicate is still rejected by the actual asynchronous create owner.
+    await expect(
+      h.authority.createClientPage({
+        browserPageId: 'slow',
+        browserHostClientId: 'client-b',
+        pairedDeviceId: 'device-a',
+        browserProfileId: 'profile-a',
+        executionHostKey: 'execution-host-a'
+      })
+    ).rejects.toThrow('browser_page_replacement_requires_retirement')
+    bounded.mockRestore()
+    h.hooks.beforeResult = undefined
+    result.resolve()
+    h.attach({ inventory: h.executor.snapshotPageInventory(), modern: false })
+    await vi.waitFor(() =>
+      expect(
+        h.authority.clientPageInitializations.canContinue(
+          'slow',
+          saved.placement,
+          h.authority.select('client-b')
+        )
+      ).toBe(true)
+    )
+    h.attach({ inventory: [], modern: false })
+    await vi.waitFor(() =>
+      expect(h.pages.getPage('slow')?.placement.browserHostClientId).toBe('client-b')
+    )
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    expect(h.executor.snapshotPageInventory()).toHaveLength(1)
+  } finally {
+    result.resolve()
+    warning.mockRestore()
+    await h.close()
+  }
+})
+
+it.each(['close', 'newer'] as const)(
+  'rejects a late legacy result after %s wins the logical row',
+  async (winner) => {
+    const h = createRecoveryLoop(['slow'])
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const result = Promise.withResolvers<void>()
+    const issued = Promise.withResolvers<void>()
+    try {
+      const saved = await retirePositiveContinuation(h)
+      const createsBefore = h.results.filter(
+        (r) => r.id === 'slow' && r.type === 'createPage'
+      ).length
+      h.hooks.beforeResult = async (event) => {
+        if (event.command.type === 'createPage') {
+          issued.resolve()
+        }
+        await result.promise
+      }
+      h.attach({ hostId: 'client-b', modern: false, inventory: [] })
+      await issued.promise
+      const newerPlacement = {
+        ...saved.placement,
+        browserHostClientId: 'newer-client',
+        pageHostGeneration: saved.placement.pageHostGeneration + 1
+      }
+      if (winner === 'close') {
+        await retireRuntimeBrowserClientPage(
+          {
+            getBrowserHostLeaseRegistry: () => h.authority,
+            getRuntimeBrowserPageRegistry: () => h.pages,
+            resolveBrowserWorkspace: async () => ({ id: saved.workspaceId }),
+            notifyHeadlessBrowserSessionTabsChanged: (id) =>
+              h.hostRuntime.notifyMobileSessionTabsChanged(id)
+          },
+          h.pages.getPage('slow')!
+        )
+        expect(h.pages.getPage('slow')).toBeUndefined()
+        await vi.waitFor(() => expect(h.executor.snapshotPageInventory()).toEqual([]))
+      } else {
+        h.pages.replaceClientPagePlacement('slow', saved.placement, newerPlacement, 'newer-key')
+        h.pages.updatePage('slow', newerPlacement, { url: 'https://example.internal/new-owner' })
+      }
+      expect(() => h.authority.clientPageInitializations.assertCreationAdmission('slow')).toThrow(
+        'browser_page_replacement_requires_retirement'
+      )
+      h.hooks.beforeResult = undefined
+      result.resolve()
+      await vi.waitFor(() =>
+        expect(h.results).toContainEqual({ id: 'slow', type: 'closePage', status: 'completed' })
+      )
+      await vi.waitFor(() =>
+        expect(() =>
+          h.authority.clientPageInitializations.assertCreationAdmission('slow')
+        ).not.toThrow()
+      )
+      await vi.waitFor(() =>
+        expect(h.results.filter((r) => r.id === 'slow' && r.type === 'createPage')).toHaveLength(
+          createsBefore + 1
+        )
+      )
+      if (winner === 'newer') {
+        expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/new-owner')
+        expect(h.pages.getPage('slow')?.placement).toEqual(newerPlacement)
+      } else {
+        expect(h.pages.getPage('slow')).toBeUndefined()
+      }
+      expect(h.executor.snapshotPageInventory()).toEqual([])
+    } finally {
+      result.resolve()
+      warning.mockRestore()
+      await h.close()
+    }
+  }
+)
+
+it('serves a newer attach once after an older held cleanup fails and publishes its successor without another attach', async () => {
+  const h = createRecoveryLoop(['slow'])
+  const replaced = vi.spyOn(h.pages, 'replaceClientPagePlacement')
+  try {
+    await h.seedNative(['slow'], 'profile-a', true)
+    const held = h.holdRetirement('slow')
+    h.native.renderer.retirePage.mockRejectedValueOnce(new Error('old-attach-reply-lost'))
+    const first = h.attach()
+    await held.started
+    const second = h.attach()
+    held.release()
+    await h.published('slow')
+    expect(h.results.filter((r) => r.id === 'slow' && r.type === 'closePage')).toEqual(
+      expect.arrayContaining([
+        { id: 'slow', type: 'closePage', status: 'failed' },
+        { id: 'slow', type: 'closePage', status: 'completed' }
+      ])
+    )
+    expect(
+      new Set(
+        h.commands
+          .filter((c) => c.browserPageId === 'slow' && c.command.type === 'closePage')
+          .map((c) => c.commandId)
+      ).size
+    ).toBe(2)
+    expect(h.native.renderer.retirePage).toHaveBeenCalledTimes(2)
+    expect(
+      h.commands.filter((c) => c.browserPageId === 'slow' && c.command.type === 'createPage')
+    ).toHaveLength(1)
+    expect(replaced).toHaveBeenCalledTimes(1)
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    expect(h.errors).toEqual([])
+    first.abort()
+    second.abort()
+    await Promise.all([first.completion, second.completion])
   } finally {
     await h.close()
   }

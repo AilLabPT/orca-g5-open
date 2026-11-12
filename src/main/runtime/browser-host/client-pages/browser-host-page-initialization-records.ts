@@ -65,7 +65,14 @@ export type Initialization = {
   executionHostKey?: string
   removePreparation?: () => void
   cleanupFailed?: boolean
-  resumeRequested?: boolean
+  cleanupRequested?: symbol
+  cleanupAttempt?: {
+    target: InitializationTarget
+    connectionToken: symbol
+    closed: boolean
+    stopped: boolean
+  }
+  preserveContinuation?(): boolean
   retiredTarget?: InitializationTarget
   releaseGrant?: () => void
   closing?: { target: InitializationTarget; absent: () => void; result: Promise<void> }
@@ -80,6 +87,7 @@ export type InitializationRecord = {
   browserHostClientId: string
   closed: boolean
   authorityRetired: boolean
+  legacyAttempt?: { state: BrowserHostLeaseState; cancel(): void }
   stopped?: boolean
   scope?: BrowserHostLeaseState
   releaseCleanup?: () => void
@@ -154,5 +162,16 @@ export function canContinueInitialization(
     record.pairedDeviceId === lease.pairedDeviceId &&
     sameInitializationPlacement(record.expected, expected) &&
     !live
+  )
+}
+
+export function initializationCleanupServesCurrentDemand(operation: Initialization): boolean {
+  const attempt = operation.cleanupAttempt
+  return Boolean(
+    attempt &&
+    sameInitializationTarget(attempt.target, operation.record.target) &&
+    attempt.connectionToken === operation.admission.state.connectionToken &&
+    attempt.closed === operation.record.closed &&
+    attempt.stopped === Boolean(operation.record.stopped)
   )
 }

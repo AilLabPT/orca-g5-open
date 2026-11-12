@@ -28,7 +28,7 @@ export type BrowserClientRetainedPage = {
   renderer: BrowserClientPageRenderer
   route: BrowserClientPageNetworkRoute
   routeSession: BrowserRouteSessionHandle
-  cleanup?: () => Promise<void>
+  cleanup?: (() => Promise<void>) & { nativeNetworkRetired?(): boolean }
   retiring: Promise<void> | null
   reconciling: boolean
   releaseAvailabilityWatch?: () => void

@@ -115,6 +115,7 @@ function rig(ids: string[], inventory: BrowserClientHostedPageInventory[] = [], 
 it('sibling publication and persistence retain a held saved URL until its own redirect commits', async () => {
   const h = rig(['slow', 'fast'])
   await recoverUnavailableRuntimeBrowserClientPages(h.options)
+  h.authority.sealClientPageInitializations(h.host.lease, false)
   await h.navigating.get('slow')!.promise
   await h.published.get('fast')!.promise
   expect(h.pages.getPage('slow')).toMatchObject({
@@ -159,6 +160,7 @@ it('a fast imported row and plain recovery publish independently of held adoptio
     ...h.options,
     adoptedPageIds: new Set(adoption.adoptedPageIds)
   })
+  h.authority.sealClientPageInitializations(h.host.lease, false)
   await h.navigating.get('slow-adopted')!.promise
   await h.published.get('fast-adopted')!.promise
   await h.published.get('recovery')!.promise
@@ -173,6 +175,7 @@ it('a fast imported row and plain recovery publish independently of held adoptio
 it('four held initializations keep the next queued and closing one joins cleanup before admitting it', async () => {
   const h = rig(['slow1', 'slow2', 'slow3', 'slow4', 'queued'])
   await recoverUnavailableRuntimeBrowserClientPages(h.options)
+  h.authority.sealClientPageInitializations(h.host.lease, false)
   await Promise.all(['slow1', 'slow2', 'slow3', 'slow4'].map((id) => h.navigating.get(id)!.promise))
   expect(h.commands.some((event) => event.browserPageId === 'queued')).toBe(false)
   const host = {

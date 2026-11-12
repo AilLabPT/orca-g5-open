@@ -17,7 +17,7 @@ export function createBrowserClientPageCleanup(
     routeSession: BrowserRouteSessionHandle | null
     route: BrowserClientPageNetworkRoute | null
   }
-): () => Promise<void> {
+): BrowserClientPageCleanup {
   const claim = target.lifecycleClaim
   const beginRetirement = cleanupStep(() => {
     if (target.guestMayExist && !claim) {
@@ -34,7 +34,7 @@ export function createBrowserClientPageCleanup(
   // Resource releases may consume their reference before rejecting; preserve that exact result.
   const releaseSession = cleanupStep(() => target.routeSession?.release(), false)
   const releaseRoute = cleanupStep(() => target.route?.release(), false)
-  return joinCleanupAttempt(async () => {
+  const cleanup = joinCleanupAttempt(async () => {
     const failures: unknown[] = []
     await collectCleanupFailure(beginRetirement, failures)
     for (const retire of retireRenderer) {
@@ -49,6 +49,13 @@ export function createBrowserClientPageCleanup(
     if (failures.length > 0) {
       throw new AggregateError(failures, 'Browser client page cleanup failed')
     }
+  })
+  return Object.assign(cleanup, {
+    nativeNetworkRetired: () =>
+      beginRetirement.succeeded() &&
+      (!target.guestMayExist || joinDestruction.succeeded()) &&
+      releaseSession.succeeded() &&
+      releaseRoute.succeeded()
   })
 }
 
@@ -87,15 +94,18 @@ export async function cleanupRetainedBrowserClientPage(
       routeSession
     })
     const releaseUploads = cleanupStep(() => dependencies.releaseUploadStaging?.(), false)
-    page.cleanup = joinCleanupAttempt(async () => {
-      const failures: unknown[] = []
-      await collectCleanupFailure(retireAutomation, failures)
-      await collectCleanupFailure(cleanupNative, failures)
-      await collectCleanupFailure(releaseUploads, failures)
-      if (failures.length > 0) {
-        throw new AggregateError(failures, 'Browser client page cleanup failed')
-      }
-    })
+    page.cleanup = Object.assign(
+      joinCleanupAttempt(async () => {
+        const failures: unknown[] = []
+        await collectCleanupFailure(retireAutomation, failures)
+        await collectCleanupFailure(cleanupNative, failures)
+        await collectCleanupFailure(releaseUploads, failures)
+        if (failures.length > 0) {
+          throw new AggregateError(failures, 'Browser client page cleanup failed')
+        }
+      }),
+      { nativeNetworkRetired: cleanupNative.nativeNetworkRetired }
+    )
   }
   page.retiring = page.cleanup()
   await page.retiring
@@ -111,12 +121,17 @@ function joinCleanupAttempt(run: () => Promise<void>): () => Promise<void> {
   }
 }
 
-function cleanupStep(run: () => void | Promise<void>, retryable = true): () => Promise<void> {
+type CleanupStep = (() => Promise<void>) & { succeeded(): boolean }
+export type BrowserClientPageCleanup = (() => Promise<void>) & { nativeNetworkRetired(): boolean }
+
+function cleanupStep(run: () => void | Promise<void>, retryable = true): CleanupStep {
+  let succeeded = false
   let result: Promise<void> | undefined
-  return async () => {
+  const step = async (): Promise<void> => {
     result ??= Promise.resolve().then(run)
     try {
       await result
+      succeeded = true
     } catch (error) {
       if (retryable) {
         result = undefined
@@ -124,6 +139,7 @@ function cleanupStep(run: () => void | Promise<void>, retryable = true): () => P
       throw error
     }
   }
+  return Object.assign(step, { succeeded: () => succeeded })
 }
 
 function browserClientPageRendererIsCurrent(renderer: BrowserClientPageRenderer): boolean {

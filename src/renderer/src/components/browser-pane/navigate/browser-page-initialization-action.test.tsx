@@ -290,8 +290,7 @@ it('carries transient initialization through the actual delta codec, clears omis
   if (!decoded.ok) {
     throw new Error('fixture delta failed')
   }
-  // SAFETY: the generic codec roundtrips the typed frame above; its public result deliberately stays unknown.
-  // oxlint-disable-next-line typescript/consistent-type-assertions
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: codec roundtrips the typed frame above; its public result stays unknown.
   await publish(decoded.result as RuntimeMobileSessionTabsResult)
   expect(page()?.initializationState).toBeUndefined()
   await publish(snapshot('https://example.internal/S', 4, 'stopped'))

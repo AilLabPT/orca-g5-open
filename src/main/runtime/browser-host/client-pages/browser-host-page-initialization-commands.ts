@@ -61,12 +61,25 @@ export function closeInitializationGuest(operation: Initialization): Promise<voi
     return operation.closing.result
   }
   const { state, input } = admission
-  const issued = state.commandLedger!.issue({
-    browserPageId: record.browserPageId,
-    pageHostGeneration: target.pageHostGeneration,
-    command: { type: 'closePage', targetAuthority: target },
-    resultAdmission: 'reconciliation'
-  })
+  const issued = state.commandLedger!.issue(
+    {
+      browserPageId: record.browserPageId,
+      pageHostGeneration: target.pageHostGeneration,
+      command: { type: 'closePage', targetAuthority: target },
+      resultAdmission: 'reconciliation'
+    },
+    () => {
+      operation.cleanupAttempt = {
+        target,
+        connectionToken: state.connectionToken,
+        closed: record.closed,
+        stopped: Boolean(record.stopped)
+      }
+      if (operation.cleanupRequested === state.connectionToken) {
+        operation.cleanupRequested = undefined
+      }
+    }
+  )
   const absent = Promise.withResolvers<void>()
   const timer = setTimeout(() => {
     if (!operation.detached && record.operation === operation) {
@@ -84,6 +97,8 @@ export function closeInitializationGuest(operation: Initialization): Promise<voi
   const result = Promise.race([raw, absent.promise])
     .then(() => {
       if (!operation.detached && sameInitializationTarget(record.target, target)) {
+        operation.cleanupAttempt = undefined
+        operation.cleanupRequested = undefined
         operation.retiredTarget = target
         record.target = undefined
         record.targetExecutionHostKey = undefined

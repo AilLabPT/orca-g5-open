@@ -16,6 +16,7 @@ export function createBrowserHostClientPageRequest(timeoutMs: number, caller?: A
   }
   return {
     signal: controller.signal,
+    cancel: abort,
     current,
     async wait<T>(result: Promise<T>): Promise<T> {
       let remove = (): void => {}

@@ -9,6 +9,7 @@ import type {
 } from './browser-host-page-initialization-records'
 import {
   sameInitializationPlacement,
+  initializationCleanupServesCurrentDemand,
   sameInitializationTarget,
   notifyInitialization
 } from './browser-host-page-initialization-records'
@@ -39,7 +40,10 @@ export function settleInitialization(
   }
   if (outcome === 'cleanup-unknown') {
     notifyInitialization(record, outcome)
-    if (operation.resumeRequested) {
+    if (
+      operation.cleanupRequested === admission.state.connectionToken &&
+      !initializationCleanupServesCurrentDemand(operation)
+    ) {
       owner.clean(operation)
     }
     return
@@ -87,7 +91,10 @@ export function settleInitialization(
     if (!record.target) {
       record.releaseCleanup?.()
       record.releaseCleanup = undefined
-      if (!record.stopped) {
+      if (!record.closed && operation.preserveContinuation?.()) {
+        record.authorityRetired = true
+        record.scope = undefined
+      } else if (!record.stopped) {
         owner.records.delete(record.browserPageId)
       }
     }

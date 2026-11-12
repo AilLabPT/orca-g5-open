@@ -292,8 +292,15 @@ it('keeps a failed exact retirement charged and parks recovery until another leg
       })
     ).rejects.toThrow('browser_host_page_creation_timeout')
     expect(h.results.filter((r) => r.id === 'slow' && r.type === 'closePage')).toHaveLength(1)
+    const sealed = vi.spyOn(h.authority, 'sealClientPageInitializations')
     h.attach()
-    await vi.waitFor(() => expect(h.native.renderer.retirePage).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => {
+      expect(sealed).toHaveBeenCalled()
+      expect(
+        h.results.filter((r) => r.id === 'slow' && r.type === 'closePage' && r.status === 'failed')
+      ).toHaveLength(2)
+    })
+    expect(h.native.renderer.retirePage).toHaveBeenCalledTimes(2)
     expect(
       h.results
         .filter((r) => r.id === 'slow' && r.type === 'closePage')

@@ -36,10 +36,13 @@ type RecoveryAuthority = Pick<
   | 'completePageRetirement'
   | 'createClientPage'
   | 'getPlacement'
-  | 'canContinueClientPageInitialization'
-  | 'cancelClientPageInitialization'
+  | 'claimLegacyClientPageRecovery'
   | 'admitClientPageInitialization'
 > & {
+  clientPageInitializations: Pick<
+    BrowserHostLeaseRegistry['clientPageInitializations'],
+    'canContinue'
+  >
   issueClientPageCommand(
     authority: {
       authorityRuntimeId: string
@@ -92,7 +95,7 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
         !options.adoptedPageIds?.has(page.browserPageId) &&
         !options.claimedPageIds?.has(page.browserPageId) &&
         (isRecoverableByLease(page, options.lease) ||
-          options.authority.canContinueClientPageInitialization(
+          options.authority.clientPageInitializations.canContinue(
             page.browserPageId,
             page.placement,
             options.lease
@@ -200,7 +203,22 @@ async function recoverPage(
       }
     }
   }
-  options.authority.cancelClientPageInitialization(page.browserPageId, page.placement)
+  const legacyRecovery = options.authority.claimLegacyClientPageRecovery(options.lease, {
+    browserPageId: page.browserPageId,
+    browserProfileId: page.browserProfileId,
+    workspaceId: page.workspaceId,
+    expected: page.placement,
+    isCurrent: () => {
+      const current = options.pages.getPage(page.browserPageId)
+      return Boolean(
+        current &&
+        current.pairedDeviceId === page.pairedDeviceId &&
+        current.browserProfileId === page.browserProfileId &&
+        current.workspaceId === page.workspaceId &&
+        sameRuntimeBrowserPlacement(current.placement, page.placement)
+      )
+    }
+  })
   const placement = await options.authority.createClientPage({
     browserPageId: page.browserPageId,
     browserHostClientId: options.lease.browserHostClientId,
@@ -208,14 +226,18 @@ async function recoverPage(
     browserProfileId: page.browserProfileId,
     executionHostKey,
     requiredCapabilities: [BROWSER_CLIENT_AUTOMATION_HOST_CAPABILITY],
-    workspaceId: page.workspaceId
+    workspaceId: page.workspaceId,
+    signal: options.signal,
+    legacyRecovery,
+    committed: (placement) =>
+      options.pages.replaceClientPagePlacement(
+        page.browserPageId,
+        page.placement,
+        placement,
+        executionHostKey
+      )
   })
-  const recovered = options.pages.replaceClientPagePlacement(
-    page.browserPageId,
-    page.placement,
-    placement,
-    executionHostKey
-  )
+  const recovered = options.pages.getPage(page.browserPageId)!
   const url = inventory?.currentUrl ?? page.url
   if (url && url !== 'about:blank') {
     await navigateRecoveredPage(options.authority, page.browserPageId, placement, url)

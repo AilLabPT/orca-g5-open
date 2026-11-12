@@ -1,3 +1,5 @@
+import { createInitializationCleanup } from './browser-host-page-initialization-closed-cleanup'
+import { claimLegacyPageRecovery } from './browser-host-page-legacy-recovery'
 import { BrowserHostPageInitializationControls } from './browser-host-page-initialization-controls'
 import {
   initializationQueue,
@@ -60,6 +62,24 @@ export class BrowserHostPageInitializations extends BrowserHostPageInitializatio
     )
   }
 
+  claimLegacyRecovery(
+    state: BrowserHostLeaseState,
+    input: Parameters<typeof claimLegacyPageRecovery>[2]
+  ) {
+    return claimLegacyPageRecovery(
+      {
+        records: this.records,
+        placements: this.authority.placements,
+        requireState: this.requireState,
+        settled: (record) => this.completion.settle(record, 'disposed'),
+        cleanup: (record, current, release, isCurrent) =>
+          this.startClosedCleanup(record, current, release, isCurrent)
+      },
+      state,
+      input
+    )
+  }
+
   sealAttach(state: BrowserHostLeaseState, blocked: boolean, connectionId?: string): void {
     if (connectionId && state.lease.connectionId !== connectionId) {
       return
@@ -83,26 +103,6 @@ export class BrowserHostPageInitializations extends BrowserHostPageInitializatio
       (operation) => this.cancelOperation(operation),
       (record) => this.completion.settle(record, record.closed ? 'disposed' : 'retained-clean')
     )
-  }
-
-  resume(state: BrowserHostLeaseState): void {
-    for (const record of this.records.values()) {
-      const operation = record.operation
-      if (operation?.admission.state === state && operation.controller.signal.aborted) {
-        if (operation.executing) {
-          operation.resumeRequested = true
-        } else {
-          this.clean(operation)
-        }
-      } else if (
-        !operation &&
-        record.closed &&
-        record.target &&
-        record.browserHostClientId === state.lease.browserHostClientId
-      ) {
-        this.startClosedCleanup(record, state)
-      }
-    }
   }
 
   admit(
@@ -227,12 +227,11 @@ export class BrowserHostPageInitializations extends BrowserHostPageInitializatio
     }
   }
 
-  private clean(operation: Initialization): void {
+  protected override clean(operation: Initialization): void {
     if (operation.executing || operation.detached) {
       return
     }
     operation.executing = true
-    operation.resumeRequested = false
     void Promise.resolve()
       .then(() => closeInitializationGuest(operation))
       .then(
@@ -244,29 +243,15 @@ export class BrowserHostPageInitializations extends BrowserHostPageInitializatio
   protected override startClosedCleanup(
     record: InitializationRecord,
     state: BrowserHostLeaseState,
-    releaseGrant?: () => void
+    releaseGrant?: () => void,
+    preserveContinuation?: () => boolean
   ): void {
-    const admission = this.observer(state, {
-      browserPageId: record.browserPageId,
-      browserProfileId: record.browserProfileId,
-      workspaceId: record.workspaceId,
-      expected: record.expected,
-      url: '',
-      isCurrent: () => false,
-      resolveExecutionHostKey: async () => null,
-      publish: () => {}
-    })
-    const operation: Initialization = {
+    const operation = createInitializationCleanup(
       record,
-      admission,
-      controller: new AbortController(),
-      running: false,
-      executing: false,
-      detached: false,
-      phase: 'cleanup',
-      releaseGrant
-    }
-    operation.controller.abort()
+      (input) => this.observer(state, input),
+      releaseGrant,
+      preserveContinuation
+    )
     record.scope = state
     record.operation = operation
     this.completion.join(state, record)
