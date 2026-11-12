@@ -644,9 +644,9 @@ it.each([750, 7500])(
         enumerations++
         return Reflect.ownKeys(target)
       },
-      get: (target, key, receiver) => {
+      get: (target, key) => {
         reads++
-        return Reflect.get(target, key, receiver)
+        return typeof key === 'string' ? target[key] : undefined
       }
     })
     useAppStore.setState({ remoteBrowserPageHandlesByPageId: counted })
