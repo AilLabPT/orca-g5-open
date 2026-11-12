@@ -1,3 +1,4 @@
+import { hasBrowserPageInitializationAction } from '../../components/browser-pane/navigate/browser-page-deferred-navigation'
 import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-types'
 import type { RuntimeMobileSessionBrowserTab } from '../../../../shared/runtime-mobile-session-tab-contracts'
 import type { BrowserPage, BrowserWorkspace } from '../../../../shared/browser-workspace-types'
@@ -115,11 +116,23 @@ export function resolveMirroredBrowserPageContent(
   tab: RuntimeMobileSessionBrowserTab,
   existingPage: BrowserPage | undefined
 ): Pick<BrowserPage, 'url' | 'title' | 'loading' | 'canGoBack' | 'canGoForward' | 'faviconUrl'> {
-  if (clientHostsMirroredBrowserPage(tab) && existingPage) {
+  const localAction = existingPage && hasBrowserPageInitializationAction(existingPage.id)
+  if (
+    existingPage &&
+    (localAction ||
+      (clientHostsMirroredBrowserPage(tab) &&
+        !tab.initializationState &&
+        !existingPage.initializationState))
+  ) {
     return {
       url: existingPage.url,
       title: existingPage.title,
-      loading: existingPage.loading,
+      loading:
+        tab.initializationState === 'pending'
+          ? true
+          : tab.initializationState === 'stopped'
+            ? false
+            : existingPage.loading,
       canGoBack: existingPage.canGoBack,
       canGoForward: existingPage.canGoForward,
       faviconUrl: existingPage.faviconUrl
@@ -188,6 +201,7 @@ export function buildMirroredBrowserTabs(
       workspaceId,
       worktreeId: snapshot.worktree,
       ...content,
+      initializationState: tab.initializationState,
       // Guest owns client-hosted loadError; host omission must not clear it.
       loadError:
         (tab.placement?.kind === 'client' ? existing?.page.loadError : tab.loadError) ?? null,

@@ -20,6 +20,7 @@ export function admitRuntimeBrowserPageInitialization(input: {
   previous?: BrowserClientHostedPageInventory
   pageHostGeneration?: number
   url: string
+  replace?: boolean
   creationTimeoutMs?: number
   closeTimeoutMs?: number
   claim?(): void
@@ -28,6 +29,7 @@ export function admitRuntimeBrowserPageInitialization(input: {
   releaseUnrecoverablePage?(page: RuntimeBrowserClientPage): void
   settled?(outcome: InitializationOutcome): void
   signal?: AbortSignal
+  completed?(url?: string): void
 }): InitializationDisposition {
   const { page } = input
   const isCurrent = (): boolean => {
@@ -48,6 +50,8 @@ export function admitRuntimeBrowserPageInitialization(input: {
     workspaceId: page.workspaceId,
     expected: page.placement,
     url: input.url,
+    replace: input.replace,
+    changed: () => input.notifyWorkspace(page.workspaceId),
     ...(input.previous ? { previous: input.previous } : {}),
     ...(input.pageHostGeneration === undefined
       ? {}
@@ -84,6 +88,7 @@ export function admitRuntimeBrowserPageInitialization(input: {
         throw new Error('browser_page_placement_stale')
       }
     },
+    completed: input.completed,
     settled: input.settled
   })
 }

@@ -56,7 +56,7 @@ export function orcadClientPageCommand(
     )
   if (name === 'browserOpenUrlOnClient') {
     return (...args: Parameters<RuntimeBrowserCommands['browserOpenUrlOnClient']>) =>
-      openBrowserUrlOnClient(host, args[0])
+      openBrowserUrlOnClient(host, args[0], args[1]?.signal)
   }
   if (name === 'browserTabCreate') {
     return (...args: Parameters<RuntimeBrowserCommands['browserTabCreate']>) =>
@@ -127,7 +127,8 @@ function createTab(
     return createBrowserPageOnPairedHost(
       host,
       params ?? {},
-      orcadBrowserProfileId(params?.profileId)
+      orcadBrowserProfileId(params?.profileId),
+      caller?.signal
     )
   }
   if (

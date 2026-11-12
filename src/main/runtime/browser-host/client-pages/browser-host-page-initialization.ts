@@ -1,4 +1,8 @@
-import { BrowserHostInitializationCompletion } from './browser-host-page-initialization-completion'
+import { BrowserHostPageInitializationControls } from './browser-host-page-initialization-controls'
+import {
+  initializationQueue,
+  waitForInitializationPartition
+} from './browser-host-page-initialization-queue'
 import { settleInitialization } from './browser-host-page-initialization-settlement'
 import { scheduleInitializationQueue } from './browser-host-page-initialization-queue'
 import {
@@ -22,10 +26,7 @@ import type {
   InitializationOutcome,
   BrowserHostPageInitializationInput
 } from './browser-host-page-initialization-records'
-import {
-  canContinueInitialization,
-  sameInitializationPlacement
-} from './browser-host-page-initialization-records'
+import { canContinueInitialization } from './browser-host-page-initialization-records'
 import { closeInitializationGuest } from './browser-host-page-initialization-commands'
 import { observeInitializationAttach } from './browser-host-page-initialization-attachment'
 import {
@@ -34,17 +35,17 @@ import {
 } from './browser-host-page-initialization-transaction'
 export type { BrowserHostPageInitializationInput } from './browser-host-page-initialization-records'
 
-export class BrowserHostPageInitializations {
-  private readonly completion = new BrowserHostInitializationCompletion()
-  private readonly records = new Map<string, InitializationRecord>()
+export class BrowserHostPageInitializations extends BrowserHostPageInitializationControls {
   private readonly queues = new Map<symbol, InitializationQueue>()
-  private readonly attachments = new Map<string, BrowserHostLeaseState>()
 
   constructor(
     private readonly authority: Omit<InitializationTransactionAuthority, 'current'>,
-    private readonly requireState: (state: BrowserHostLeaseState) => void,
-    private readonly retireLease: (state: BrowserHostLeaseState) => void
-  ) {}
+    requireState: (state: BrowserHostLeaseState) => void,
+    private readonly retireLease: (state: BrowserHostLeaseState) => void,
+    changed: (workspaceId: string) => void = () => {}
+  ) {
+    super(requireState, changed)
+  }
 
   canContinue(
     id: string,
@@ -63,6 +64,7 @@ export class BrowserHostPageInitializations {
     if (connectionId && state.lease.connectionId !== connectionId) {
       return
     }
+    this.preparation.seal(state)
     this.completion.seal(state, blocked)
   }
 
@@ -71,6 +73,7 @@ export class BrowserHostPageInitializations {
     inventory: readonly BrowserClientHostedPageInventory[] | undefined,
     complete: () => void = () => {}
   ): void {
+    this.preparation.observe(state)
     this.completion.begin(state, this.records.values(), complete)
     this.attachments.set(state.lease.browserHostClientId, state)
     observeInitializationAttach(
@@ -109,11 +112,20 @@ export class BrowserHostPageInitializations {
     return admitInitialization(this.admissionOwner(), state, input)
   }
 
-  retireUnpublished(state: BrowserHostLeaseState, input: BrowserHostPageInitializationInput): void {
-    retireUnpublishedInitialization(this.admissionOwner(), state, input)
+  retireUnpublished(
+    state: BrowserHostLeaseState,
+    input: BrowserHostPageInitializationInput,
+    cleanup?: { executionHostKey: string; releaseGrant(): void }
+  ): void {
+    retireUnpublishedInitialization(this.admissionOwner(), state, input, cleanup)
   }
 
   retireAuthority(state: BrowserHostLeaseState): void {
+    const changed = new Set(
+      [...this.records.values()]
+        .filter((record) => record.scope === state && this.presentation(record))
+        .map((record) => record.workspaceId)
+    )
     retireInitializationAuthority(
       this.records,
       this.queues,
@@ -123,7 +135,11 @@ export class BrowserHostPageInitializations {
       (id) => this.authority.placements.claimClientPageCleanup(id),
       state
     )
+    this.preparation.retire(state)
     this.completion.retire(state)
+    for (const workspace of changed) {
+      this.changed(workspace)
+    }
   }
 
   private admissionOwner(): InitializationAdmissionOwner {
@@ -137,53 +153,9 @@ export class BrowserHostPageInitializations {
       releaseAdmission: (admission) => this.releaseAdmission(admission),
       enqueue: (record, admission) => this.enqueue(record, admission),
       resume: (state) => this.resume(state),
-      startClosedCleanup: (record, state) => this.startClosedCleanup(record, state)
+      startClosedCleanup: (record, state, releaseGrant) =>
+        this.startClosedCleanup(record, state, releaseGrant)
     }
-  }
-
-  cancel(id: string, expected: RuntimeBrowserClientPlacement): boolean {
-    const record = this.records.get(id)
-    if (!record || !sameInitializationPlacement(record.expected, expected)) {
-      return false
-    }
-    if (record.authorityRetired && !record.operation && !record.successor) {
-      this.completion.settle(record, 'disposed')
-      this.records.delete(id)
-      return true
-    }
-    record.closed = true
-    if (record.successor) {
-      this.releaseAdmission(record.successor)
-      record.successor = undefined
-    }
-    if (record.operation) {
-      this.cancelOperation(record.operation)
-    } else {
-      const state = this.attachments.get(record.browserHostClientId)
-      if (state && record.target) {
-        this.startClosedCleanup(record, state)
-      } else if (!record.target) {
-        record.releaseCleanup?.()
-        this.completion.settle(record, 'disposed')
-        this.records.delete(id)
-      }
-    }
-    return true
-  }
-
-  fence(state: BrowserHostLeaseState): void {
-    for (const record of this.records.values()) {
-      if (record.operation?.admission.state === state) {
-        this.cancelOperation(record.operation)
-      }
-    }
-  }
-
-  private observer(
-    state: BrowserHostLeaseState,
-    input: BrowserHostPageInitializationInput
-  ): InitializationAdmission {
-    return { state, input, connectionToken: state.connectionToken, removeAbort: () => {} }
   }
 
   private enqueue(record: InitializationRecord, admission: InitializationAdmission): void {
@@ -193,17 +165,14 @@ export class BrowserHostPageInitializations {
       controller: new AbortController(),
       running: false,
       executing: false,
-      detached: false
+      detached: false,
+      phase: 'cleanup'
     }
     record.scope = admission.state
     record.operation = operation
     this.completion.join(admission.state, record)
-    const queue = this.queues.get(admission.state.token) ?? {
-      pending: [],
-      active: 0,
-      scheduled: false
-    }
-    this.queues.set(admission.state.token, queue)
+    this.preparation.register(admission.state, record)
+    const queue = initializationQueue(this.queues, admission.state.token)
     queue.pending.push(operation)
     this.schedule(admission.state.token, queue)
   }
@@ -237,11 +206,14 @@ export class BrowserHostPageInitializations {
     }
   }
 
-  private cancelOperation(operation: Initialization): void {
+  protected override cancelOperation(operation: Initialization): void {
     if (operation.detached) {
       return
     }
+    operation.removePreparation?.()
+    operation.removePreparation = undefined
     operation.controller.abort()
+    operation.admission.input.completed?.()
     if (operation.admission.reservation) {
       this.authority.placements.cancelClientPageReservation(operation.admission.reservation)
     }
@@ -269,7 +241,11 @@ export class BrowserHostPageInitializations {
       )
   }
 
-  private startClosedCleanup(record: InitializationRecord, state: BrowserHostLeaseState): void {
+  protected override startClosedCleanup(
+    record: InitializationRecord,
+    state: BrowserHostLeaseState,
+    releaseGrant?: () => void
+  ): void {
     const admission = this.observer(state, {
       browserPageId: record.browserPageId,
       browserProfileId: record.browserProfileId,
@@ -286,20 +262,37 @@ export class BrowserHostPageInitializations {
       controller: new AbortController(),
       running: false,
       executing: false,
-      detached: false
+      detached: false,
+      phase: 'cleanup',
+      releaseGrant
     }
     operation.controller.abort()
     record.scope = state
     record.operation = operation
     this.completion.join(state, record)
+    this.preparation.register(state, record)
     // A rebound native close is charged to the current dispatcher; no replacement is created.
-    const queue = this.queues.get(state.token) ?? { pending: [], active: 0, scheduled: false }
-    this.queues.set(state.token, queue)
+    const queue = initializationQueue(this.queues, state.token)
     queue.pending.push(operation)
     this.schedule(state.token, queue)
   }
 
   private settle(operation: Initialization, outcome: InitializationOutcome): void {
+    if (operation.detached || operation.record.operation !== operation) {
+      return
+    }
+    const { record, admission } = operation
+    const before = this.presentation(record)
+    if (outcome === 'prepared') {
+      waitForInitializationPartition(operation, this.preparation, this.queues, (token, queue) =>
+        this.schedule(token, queue)
+      )
+      return
+    }
+    operation.cleanupFailed = outcome === 'cleanup-unknown'
+    if (!record.target) {
+      this.preparation.joined(admission.state, record)
+    }
     settleInitialization(operation, outcome, {
       authority: this.authority,
       completed: (record, outcome) => this.completion.settle(record, outcome),
@@ -311,10 +304,14 @@ export class BrowserHostPageInitializations {
       enqueue: (record, admission) => this.enqueue(record, admission),
       schedule: (token, queue) => this.schedule(token, queue)
     })
+    if (before !== this.presentation(this.records.get(record.browserPageId))) {
+      this.changed(record.workspaceId)
+    }
   }
 
-  private releaseAdmission(admission: InitializationAdmission): void {
+  protected override releaseAdmission(admission: InitializationAdmission): void {
     admission.removeAbort()
+    admission.input.completed?.()
     if (admission.reservation) {
       this.authority.placements.cancelClientPageReservation(admission.reservation)
     }

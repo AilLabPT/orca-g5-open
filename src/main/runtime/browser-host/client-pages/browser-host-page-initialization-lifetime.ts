@@ -27,6 +27,8 @@ export function retireInitializationAuthority(
     }
     const operation = record.operation
     if (operation?.admission.state === state) {
+      operation.removePreparation?.()
+      operation.removePreparation = undefined
       operation.detached = true
       operation.controller.abort()
       releaseAdmission(operation.admission)
@@ -38,6 +40,7 @@ export function retireInitializationAuthority(
     record.releaseCleanup?.()
     record.releaseCleanup = undefined
     record.target = undefined
+    record.targetExecutionHostKey = undefined
     record.scope = undefined
     record.observer = undefined
     record.authorityRetired = true
@@ -60,7 +63,7 @@ export function retireInitializationAuthority(
       if (successor) {
         releaseAdmission(successor)
       }
-      if (record.closed) {
+      if (record.closed || record.stopped) {
         records.delete(record.browserPageId)
       }
     }

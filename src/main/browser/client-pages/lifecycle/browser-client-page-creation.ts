@@ -57,7 +57,9 @@ export async function createReservedBrowserClientPage(
     if (route.key !== event.command.executionHostKey) {
       throw new BrowserClientPageCommandError('browser_client_page_execution_host_stale')
     }
-    await dependencies.retireSupersededExecutionHostPages(route)
+    if (event.command.initialUrl === undefined) {
+      await dependencies.retireSupersededExecutionHostPages(route)
+    }
     assertBrowserClientPageCommandNotAborted(signal)
     assertAvailable()
     renderer = dependencies.selectRenderer()

@@ -83,6 +83,7 @@ export class BrowserHostLeaseRegistry {
         leases: this.leasesByClientId,
         tunnels: this.tunnels,
         reconnectGraceMs: options.reconnectGraceMs,
+        initializationChanged: options.onClientPageInitializationChanged,
         fence: (state, reason) => this.fenceLease(state, reason),
         fenceReconciliation: (state) => this.fenceReconciliation(state)
       }
@@ -170,14 +171,13 @@ export class BrowserHostLeaseRegistry {
     })
   }
 
-  async createClientPage(
-    options: BrowserHostClientPageCreateOptions
-  ): Promise<RuntimeBrowserClientPlacement> {
+  createClientPage(options: BrowserHostClientPageCreateOptions) {
     return createBrowserHostClientPage(options, {
       selectLease: (clientId, capabilities) => this.select(clientId, capabilities),
       requireLeaseState: (lease) => this.requireLeaseState(lease),
       pagePlacements: this.pagePlacements,
-      executionHostGrants: this.pageGrants
+      executionHostGrants: this.pageGrants,
+      initializations: this.controllers.initializations
     })
   }
 
@@ -186,6 +186,10 @@ export class BrowserHostLeaseRegistry {
     input: BrowserHostPageInitializationInput
   ) {
     return this.controllers.initializations.admit(this.requireLeaseState(identity), input)
+  }
+
+  get clientPageInitializations() {
+    return this.controllers.initializations
   }
 
   canContinueClientPageInitialization(

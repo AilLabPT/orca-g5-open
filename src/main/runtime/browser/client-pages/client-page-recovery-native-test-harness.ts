@@ -110,7 +110,9 @@ export function createRecoveryNativeLoop(hooks: { failCommit?: boolean }) {
 export async function seedRecoveryNativePages(
   executor: BrowserClientPageCommandExecutor,
   ids: readonly string[],
-  browserHostClientId: string
+  browserHostClientId: string,
+  browserProfileId = 'profile-a',
+  controlled = false
 ) {
   const oldAuthority = {
     authorityRuntimeId: 'runtime-old',
@@ -134,7 +136,8 @@ export async function seedRecoveryNativePages(
       commandSequence: 1,
       command: {
         type: 'createPage',
-        browserProfileId: 'profile-a',
+        ...(controlled ? { initialUrl: `https://example.internal/${id}` } : {}),
+        browserProfileId,
         executionHostKey: 'execution-host-a',
         workspaceId: 'repo-1::/tmp/worktree-a'
       }
@@ -142,6 +145,17 @@ export async function seedRecoveryNativePages(
     const result = await predecessor.dispatch(event)
     if (result.status !== 'completed') {
       throw new Error('predecessor-create-failed')
+    }
+    if (controlled) {
+      const committed = await predecessor.dispatch({
+        ...event,
+        commandId: `seed-commit-${id}`,
+        commandSequence: 2,
+        command: { type: 'navigate', url: `https://example.internal/${id}` }
+      })
+      if (committed.status !== 'completed') {
+        throw new Error('predecessor-commit-failed')
+      }
     }
     executor.recordPublishedPageUrl({
       ...event,

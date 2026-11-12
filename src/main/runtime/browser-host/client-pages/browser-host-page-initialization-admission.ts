@@ -23,7 +23,11 @@ export type InitializationAdmissionOwner = {
   releaseAdmission(admission: InitializationAdmission): void
   enqueue(record: InitializationRecord, admission: InitializationAdmission): void
   resume(state: BrowserHostLeaseState): void
-  startClosedCleanup(record: InitializationRecord, state: BrowserHostLeaseState): void
+  startClosedCleanup(
+    record: InitializationRecord,
+    state: BrowserHostLeaseState,
+    releaseGrant?: () => void
+  ): void
 }
 
 export function admitInitialization(
@@ -54,11 +58,16 @@ export function admitInitialization(
   if (record) {
     owner.join(state, record)
   }
+  if (record?.stopped && record.scope === state && !record.authorityRetired && !input.replace) {
+    owner.join(state, record)
+    return 'joined-existing'
+  }
   const operation = record?.operation
   if (
     operation &&
     operation.admission.state === state &&
     operation.admission.connectionToken === state.connectionToken &&
+    !input.replace &&
     !operation.controller.signal.aborted
   ) {
     record!.observer = owner.observer(state, input)
@@ -106,6 +115,7 @@ export function admitInitialization(
   admission.removeAbort = () => input.signal?.removeEventListener('abort', abort)
   input.signal?.addEventListener('abort', abort, { once: true })
   record.observer = admission
+  record.stopped = false
   try {
     input.claim?.()
   } catch (error) {
@@ -118,6 +128,7 @@ export function admitInitialization(
   }
   if (operation) {
     record.successor = admission
+    input.changed?.()
     owner.resume(state)
     return 'successor-pending'
   }
@@ -127,14 +138,17 @@ export function admitInitialization(
   record.browserHostClientId = state.lease.browserHostClientId
   record.authorityRetired = false
   record.target ??= input.previous
+  record.targetExecutionHostKey ??= input.previous?.executionHostKey
   owner.enqueue(record, admission)
+  input.changed?.()
   return 'queued'
 }
 
 export function retireUnpublishedInitialization(
   owner: InitializationAdmissionOwner,
   state: BrowserHostLeaseState,
-  input: BrowserHostPageInitializationInput
+  input: BrowserHostPageInitializationInput,
+  cleanup?: { executionHostKey: string; releaseGrant(): void }
 ): void {
   const placement = input.expected
   const record: InitializationRecord = {
@@ -147,6 +161,7 @@ export function retireUnpublishedInitialization(
     closed: true,
     authorityRetired: false,
     scope: state,
+    targetExecutionHostKey: cleanup?.executionHostKey,
     target: {
       ...placement,
       authorityRuntimeId: state.lease.authorityRuntimeId,
@@ -157,10 +172,11 @@ export function retireUnpublishedInitialization(
     throw new Error('browser_page_reconciliation_reservation_pending')
   }
   if (state.commandLedger?.isClosed()) {
+    cleanup?.releaseGrant()
     return
   }
   record.releaseCleanup = owner.placements.claimClientPageCleanup(input.browserPageId)
   owner.records.set(input.browserPageId, record)
   owner.join(state, record)
-  owner.startClosedCleanup(record, state)
+  owner.startClosedCleanup(record, state, cleanup?.releaseGrant)
 }

@@ -29,9 +29,10 @@ export class BrowserHostInitializationCompletion {
     const members = new Set<InitializationRecord>()
     for (const record of records) {
       if (
-        record.scope === state ||
-        record.operation?.admission.state === state ||
-        record.successor?.state === state
+        !isCleanStoppedInitialization(record) &&
+        (record.scope === state ||
+          record.operation?.admission.state === state ||
+          record.successor?.state === state)
       ) {
         members.add(record)
       }
@@ -92,6 +93,9 @@ export class BrowserHostInitializationCompletion {
   }
 
   private link(context: Completion, record: InitializationRecord): void {
+    if (isCleanStoppedInitialization(record)) {
+      return
+    }
     context.members.add(record)
     const contexts = this.contextsByRecord.get(record) ?? new Set<Completion>()
     contexts.add(context)
@@ -122,4 +126,8 @@ export class BrowserHostInitializationCompletion {
     }
     completed?.complete()
   }
+}
+
+function isCleanStoppedInitialization(record: InitializationRecord): boolean {
+  return Boolean(record.stopped && !record.target && !record.operation && !record.successor)
 }

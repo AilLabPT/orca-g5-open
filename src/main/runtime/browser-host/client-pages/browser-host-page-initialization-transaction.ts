@@ -31,23 +31,30 @@ export async function runInitializationTransaction(
   const { record, admission } = operation
   const { state, input, reservation } = admission
   let published = false
-  let closingPredecessor = false
   try {
     authority.current(operation)
-    const executionHostKey = await awaitInitializationResult(
-      input.resolveExecutionHostKey(),
-      operation.controller.signal
-    )
-    authority.current(operation)
-    if (executionHostKey === null) {
+    if (operation.phase === 'cleanup') {
+      operation.executionHostKey =
+        (await awaitInitializationResult(
+          input.resolveExecutionHostKey(),
+          operation.controller.signal
+        )) ?? undefined
+      authority.current(operation)
+      if (record.target) {
+        try {
+          await closeInitializationGuest(operation)
+        } catch {
+          return 'cleanup-unknown'
+        }
+      }
+      authority.current(operation)
+      return operation.executionHostKey === undefined ? 'route-parked' : 'prepared'
+    }
+    const executionHostKey = operation.executionHostKey
+    if (!executionHostKey) {
       return 'route-parked'
     }
     operation.releaseGrant = state.executionHostGrants.retain(executionHostKey).release
-    if (record.target) {
-      closingPredecessor = true
-      await closeInitializationGuest(operation)
-      closingPredecessor = false
-    }
     authority.current(operation)
     const previous = authority.placements.getPlacement(record.browserPageId)
     if (previous) {
@@ -81,6 +88,7 @@ export async function runInitializationTransaction(
     authority.grants.set(record.browserPageId, grant)
     try {
       record.expected = placement
+      operation.phase = 'published'
       input.publish(placement, result.value, executionHostKey)
       if (
         record.closed ||
@@ -91,6 +99,7 @@ export async function runInitializationTransaction(
         throw new Error('browser_client_page_initialization_stale')
       }
       published = true
+      input.completed?.(result.value)
       operation.releaseGrant = undefined
       record.target = undefined
     } catch (error) {
@@ -107,9 +116,6 @@ export async function runInitializationTransaction(
     }
     return 'published'
   } catch {
-    if (closingPredecessor && record.target && !operation.detached) {
-      return 'cleanup-unknown'
-    }
     if (!operation.detached) {
       try {
         await closeInitializationGuest(operation)
@@ -119,7 +125,7 @@ export async function runInitializationTransaction(
     }
     return record.closed ? 'disposed' : 'retained-clean'
   } finally {
-    if (!published) {
+    if (!published && operation.phase !== 'cleanup') {
       if (reservation) {
         authority.placements.cancelClientPageReservation(reservation)
       }

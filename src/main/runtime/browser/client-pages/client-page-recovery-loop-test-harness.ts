@@ -1,5 +1,5 @@
+import { RecoveryWorkspaceRuntime } from './client-page-recovery-workspace-test-harness'
 import { BROWSER_CLIENT_AUTOMATION_HOST_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-automation-protocol'
-import { OrcaRuntimeService } from '../../orca-runtime'
 import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-session-contracts'
 import { createProfile } from './client-hosted-browser-persistence-test-harness'
 import { RpcDispatcher } from '../../rpc/dispatcher'
@@ -20,7 +20,7 @@ import { getRuntimeBrowserPageRegistry } from './runtime-browser-page-registry'
 import { getBrowserHostLeaseRegistry } from '../../browser-host/leases/browser-host-lease-registry-instance'
 import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from './client-hosted-browser-page-persistence'
 
-type RecoveryRuntimeObservation = OrcaRuntimeService & {
+type RecoveryRuntimeObservation = RecoveryWorkspaceRuntime & {
   projectedFrames: number
   sessionTabsSequence(): number
   peekSnapshotForClient(worktree: string, clientId: string): RuntimeMobileSessionTabsResult
@@ -41,6 +41,7 @@ export function createRecoveryLoop(
     onResult?: (event: BrowserClientHostCommandEvent) => void
     beforeResult?: (event: BrowserClientHostCommandEvent) => Promise<void>
     onNotify?: () => void
+    beforeWorkspace?: () => Promise<void>
     failCommit?: boolean
     delivery?: (event: BrowserClientHostCommandEvent, dispatch: () => void) => void
   } = {}
@@ -58,7 +59,7 @@ export function createRecoveryLoop(
   let client: BrowserClientHostCommandDispatcher | undefined
   let authorityGeneration = 0
   const profile = createProfile(loopOptions.worktreeCount)
-  class RecoveryRuntime extends OrcaRuntimeService {
+  class RecoveryRuntime extends RecoveryWorkspaceRuntime {
     projectedFrames = 0
     sessionTabsSequence() {
       return this.mobileSessionTabsChangeSequence
@@ -82,12 +83,6 @@ export function createRecoveryLoop(
       this.observeClientHostedPageSnapshots([result], clientId)
       return result
     }
-    override getRuntimeId(): string {
-      return 'runtime-a'
-    }
-    override async resolveBrowserExecutionHostKeyForWorkspace() {
-      return { status: 'resolved' as const, executionHostKey: 'execution-host-a' }
-    }
     override markClientHostedPagesReconciled(id: string): void {
       super.markClientHostedPagesReconciled(id)
       reconciled = true
@@ -98,7 +93,10 @@ export function createRecoveryLoop(
       notify()
     }
   }
-  const hostRuntime: RecoveryRuntimeObservation = new RecoveryRuntime(profile.store, undefined, {})
+  const hostRuntime: RecoveryRuntimeObservation = Object.assign(
+    new RecoveryRuntime(profile.store, undefined, {}),
+    { beforeRecoveryWorkspace: () => hooks.beforeWorkspace?.() }
+  )
   const registerSubscription = hostRuntime.registerSubscriptionCleanup.bind(hostRuntime)
   hostRuntime.registerSubscriptionCleanup = (id, cleanup, connection) => {
     registerSubscription(id, cleanup, connection)
@@ -249,13 +247,15 @@ export function createRecoveryLoop(
     errors,
     native,
     hostRuntime,
+    rpc,
+    caller,
     attach,
     hold: nativeLoop.hold,
     release: nativeLoop.release,
     holdMount: nativeLoop.holdMount,
     holdRetirement: nativeLoop.holdRetirement,
-    seedNative: (ids: readonly string[]) =>
-      seedRecoveryNativePages(executor, ids, browserHostClientId),
+    seedNative: (ids: readonly string[], profileId?: string, controlled?: boolean) =>
+      seedRecoveryNativePages(executor, ids, browserHostClientId, profileId, controlled),
     get executor() {
       return executor
     },

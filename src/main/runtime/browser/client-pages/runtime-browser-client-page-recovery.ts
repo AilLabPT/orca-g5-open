@@ -1,3 +1,4 @@
+import { batchBrowserPageInitializationNotifications } from './browser-page-initialization-notifications'
 import {
   isRecoverableByLease,
   isActiveExactPage,
@@ -99,19 +100,22 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
         !isActiveExactPage(page, inventoryByPageId.get(page.browserPageId), options.lease)
     )
   if (options.lease.hostCapabilities?.includes(BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY)) {
-    for (const page of pages) {
-      const previous = inventoryByPageId.get(page.browserPageId)
-      admitRuntimeBrowserPageInitialization({
-        ...options,
-        lease: options.lease,
-        page,
-        url: previous?.currentUrl ?? page.url,
-        ...(previous ? { previous } : {}),
-        resolveExecutionHostKey:
-          options.resolveExecutionHostKey ??
-          (async () => ({ status: 'resolved', executionHostKey: page.executionHostKey }))
-      })
-    }
+    batchBrowserPageInitializationNotifications(options.notifyWorkspace, (notifyWorkspace) => {
+      for (const page of pages) {
+        const previous = inventoryByPageId.get(page.browserPageId)
+        admitRuntimeBrowserPageInitialization({
+          ...options,
+          notifyWorkspace,
+          lease: options.lease,
+          page,
+          url: previous?.currentUrl ?? page.url,
+          ...(previous ? { previous } : {}),
+          resolveExecutionHostKey:
+            options.resolveExecutionHostKey ??
+            (async () => ({ status: 'resolved', executionHostKey: page.executionHostKey }))
+        })
+      }
+    })
     return
   }
   await recoverClientPagesWithConcurrency(

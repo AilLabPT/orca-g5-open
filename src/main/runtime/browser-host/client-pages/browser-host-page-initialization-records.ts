@@ -7,6 +7,7 @@ import type { BrowserHostLeaseState } from '../leases/browser-host-lease-records
 import type { BrowserClientPagePlacementReservation } from '../reconciliation/browser-host-page-placement'
 
 export type InitializationOutcome =
+  | 'prepared'
   | 'published'
   | 'retained-clean'
   | 'disposed'
@@ -35,11 +36,14 @@ export type BrowserHostPageInitializationInput = {
   creationTimeoutMs?: number
   closeTimeoutMs?: number
   signal?: AbortSignal
+  replace?: boolean
+  changed?(): void
   claim?(): void
   isCurrent(): boolean
   resolveExecutionHostKey(): Promise<string | null>
   publish(placement: RuntimeBrowserClientPlacement, url: string, executionHostKey: string): void
   settled?(outcome: InitializationOutcome): void
+  completed?(url?: string): void
 }
 
 export type InitializationAdmission = {
@@ -57,6 +61,10 @@ export type Initialization = {
   running: boolean
   executing: boolean
   detached: boolean
+  phase: 'cleanup' | 'waiting' | 'create' | 'published'
+  executionHostKey?: string
+  removePreparation?: () => void
+  cleanupFailed?: boolean
   resumeRequested?: boolean
   retiredTarget?: InitializationTarget
   releaseGrant?: () => void
@@ -72,9 +80,11 @@ export type InitializationRecord = {
   browserHostClientId: string
   closed: boolean
   authorityRetired: boolean
+  stopped?: boolean
   scope?: BrowserHostLeaseState
   releaseCleanup?: () => void
   target?: InitializationTarget
+  targetExecutionHostKey?: string
   operation?: Initialization
   successor?: InitializationAdmission
   observer?: InitializationAdmission

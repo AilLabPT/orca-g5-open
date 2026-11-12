@@ -36,6 +36,7 @@ export function issueInitializationCommand(
           authorityEpoch: state.lease.authorityEpoch,
           ...reservation.placement
         }
+        operation.record.targetExecutionHostKey = command.executionHostKey
       }
     }
   )
@@ -85,6 +86,7 @@ export function closeInitializationGuest(operation: Initialization): Promise<voi
       if (!operation.detached && sameInitializationTarget(record.target, target)) {
         operation.retiredTarget = target
         record.target = undefined
+        record.targetExecutionHostKey = undefined
       }
     })
     .finally(() => {

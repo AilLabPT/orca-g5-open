@@ -2,6 +2,7 @@
 import { act, cleanup, render as renderWithProviders, screen } from '@testing-library/react'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type * as RecoveryWindow from './restored-client-hosted-recovery-window'
 import type { BrowserPage } from '../../../../shared/browser-workspace-types'
 
 const mocks = vi.hoisted(() => ({
@@ -9,6 +10,8 @@ const mocks = vi.hoisted(() => ({
   publishMetadata: vi.fn(),
   createBrowserTab: vi.fn(async () => true),
   restoredPageUnrecovered: false,
+  realRecoveryWindow: false,
+  initializationAction: vi.fn(async () => {}),
   addressBar: {
     current: null as {
       value: string
@@ -37,8 +40,20 @@ vi.mock('./browser-client-page-renderer-installation', () => ({
   attachBrowserClientPageToViewport: mocks.attach
 }))
 
-vi.mock('./restored-client-hosted-recovery-window', () => ({
-  useRestoredClientHostedRecoveryWindow: () => mocks.restoredPageUnrecovered
+vi.mock('./restored-client-hosted-recovery-window', async (importOriginal) => {
+  const actual = await importOriginal<typeof RecoveryWindow>()
+  return {
+    ...actual,
+    useRestoredClientHostedRecoveryWindow: (
+      input: Parameters<typeof actual.useRestoredClientHostedRecoveryWindow>[0]
+    ) => {
+      const elapsed = actual.useRestoredClientHostedRecoveryWindow(input)
+      return mocks.realRecoveryWindow ? elapsed : mocks.restoredPageUnrecovered
+    }
+  }
+})
+vi.mock('./navigate/browser-page-initialization-action', () => ({
+  routeBrowserPageInitializationAction: mocks.initializationAction
 }))
 
 vi.mock('./assemble-chrome/BrowserAddressBar', () => ({
@@ -53,6 +68,7 @@ vi.mock('./assemble-chrome/BrowserAddressBar', () => ({
   }
 }))
 
+import { connectedRuntimeStatus } from '@/runtime/rpc/testing/paired-runtime-environment-test-fixture'
 import { useAppStore } from '@/store'
 import { normalizeBrowserNavigationUrl } from '../../../../shared/browser-url'
 import { requestBrowserFocus } from './host-guest/browser-focus'
@@ -72,11 +88,78 @@ describe('ClientHostedBrowserPagePane', () => {
   beforeEach(() => {
     mocks.attach.mockReset()
     mocks.restoredPageUnrecovered = false
+    mocks.realRecoveryWindow = false
+    mocks.initializationAction.mockClear()
     mocks.publishMetadata.mockReset().mockResolvedValue({ status: 'published', accepted: true })
     // Download, popup and permission notices subscribe on mount; each has its own suite.
     installClientHostedPaneApi({ browser: { publishClientPageMetadata: mocks.publishMetadata } })
   })
-  afterEach(() => cleanup())
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+  })
+
+  it.each([null, { ...PLACEMENT, pageHostGeneration: 0 }])(
+    'keeps owned recovery usable beyond the legacy absence window with placement %j',
+    async (placement) => {
+      vi.useFakeTimers()
+      mocks.realRecoveryWindow = true
+      useAppStore.setState({
+        remoteBrowserPageHandlesByPageId: {
+          'page-a': {
+            environmentId: 'environment-a',
+            remotePageId: 'page-a',
+            restoredFromSession: true,
+            placement: placement ?? { ...PLACEMENT, pageHostGeneration: 0 }
+          }
+        },
+        runtimeStatusByEnvironmentId: new Map([
+          ['environment-a', connectedRuntimeStatus('runtime-a', 1)]
+        ])
+      })
+      const pending = {
+        ...page(),
+        url: 'https://example.internal/saved',
+        initializationState: 'pending' as const,
+        loading: true
+      }
+      const pane = (browserTab: BrowserPage, currentPlacement = placement) => (
+        <ClientHostedBrowserPagePane
+          browserTab={browserTab}
+          workspaceId="workspace-a"
+          chromeShortcutScope="focused"
+          runtimeEnvironmentId="environment-a"
+          worktreeId="worktree-a"
+          placement={currentPlacement}
+          isActive
+          onUpdatePageState={vi.fn()}
+          onSetUrl={vi.fn()}
+        />
+      )
+      const view = render(pane(pending))
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(screen.queryByText('Reopen')).toBeNull()
+      expect(screen.getByLabelText<HTMLInputElement>('Address').value).toBe(
+        'https://example.internal/saved'
+      )
+      expect(mocks.attach).not.toHaveBeenCalled()
+      act(() => screen.getByRole('button', { name: 'Stop' }).click())
+      // The restored sentinel handle supplies the exact pending owner even before placement arrives.
+      expect(mocks.initializationAction).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: { type: 'stop' } })
+      )
+      const stopped = { ...pending, initializationState: 'stopped' as const, loading: false }
+      view.rerender(pane(stopped))
+      expect(screen.queryByText('Reopen')).toBeNull()
+      expect(screen.getByRole('button', { name: 'Reload' })).not.toBeNull()
+      const { webview } = createWebview()
+      mocks.attach.mockReturnValue(retainedAttachment(webview))
+      view.rerender(pane({ ...stopped, initializationState: undefined }, PLACEMENT))
+      expect(mocks.attach).toHaveBeenCalled()
+    }
+  )
 
   it('searches non-URL address input like the local pane instead of forcing a host', () => {
     const { webview } = createWebview()

@@ -1,3 +1,4 @@
+import { BROWSER_PAGE_INITIALIZATION_ACTION_METHODS } from './browser-page-initialization-action'
 import '../../../../../shared/protocol-version'
 import {
   BROWSER_CLIENT_HOST_RUNTIME_CAPABILITY,
@@ -24,6 +25,7 @@ import { getBrowserHostRequestRegistry } from '../../../browser-host/leases/brow
 import { defineMethod, defineStreamingMethod } from '../../core'
 
 export const BROWSER_CLIENT_HOST_METHODS = [
+  ...BROWSER_PAGE_INITIALIZATION_ACTION_METHODS,
   defineStreamingMethod({
     name: 'browser.clientHost.attach',
     permission: 'workspace',

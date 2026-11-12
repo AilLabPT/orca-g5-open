@@ -87,7 +87,9 @@ export function settleInitialization(
     if (!record.target) {
       record.releaseCleanup?.()
       record.releaseCleanup = undefined
-      owner.records.delete(record.browserPageId)
+      if (!record.stopped) {
+        owner.records.delete(record.browserPageId)
+      }
     }
   }
   if (queue) {
