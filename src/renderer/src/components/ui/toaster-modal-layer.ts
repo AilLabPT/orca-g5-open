@@ -7,7 +7,7 @@ import {
   type RefObject,
   type SyntheticEvent
 } from 'react'
-import { useSonner } from 'sonner'
+import { toast as sonnerToast, useSonner } from 'sonner'
 import { track } from '@/diagnostics/telemetry/telemetry'
 
 // Mirrored by installBodyOverlayAttributes; only Dialog/Sheet overlays set it, not menus.
@@ -19,8 +19,24 @@ const STATIC_TOAST_ID = /^[a-z][a-z-]{0,63}$/
 
 type RaisedBy = 'click' | 'new_toast'
 
+// Ids Sonner had published when the modal opened. Delivery to useSonner runs a task later, so a
+// toast published just before a portal connects would otherwise count as raised by the modal.
+let toastIdsPublishedBeforeModal: ReadonlySet<string | number> | null = null
+
+function recordToastsPublishedBeforeModal(): void {
+  if (!isModalOpen()) {
+    toastIdsPublishedBeforeModal = null
+  } else if (toastIdsPublishedBeforeModal === null) {
+    toastIdsPublishedBeforeModal = new Set(sonnerToast.getToasts().map((toast) => toast.id))
+  }
+}
+
 function subscribeModalOpen(onChange: () => void): () => void {
-  const observer = new MutationObserver(onChange)
+  recordToastsPublishedBeforeModal()
+  const observer = new MutationObserver(() => {
+    recordToastsPublishedBeforeModal()
+    onChange()
+  })
   observer.observe(document.body, { attributes: true, attributeFilter: [MODAL_OPEN_ATTRIBUTE] })
   return () => observer.disconnect()
 }
@@ -73,7 +89,11 @@ export function useToasterModalLayer(wrapperRef: RefObject<HTMLDivElement | null
     }
     const known = toastIdsBeforeModalRef.current
     if (known === null) {
-      toastIdsBeforeModalRef.current = new Set(toasts.map((toast) => toast.id))
+      const before = new Set(toasts.map((toast) => toast.id))
+      for (const id of toastIdsPublishedBeforeModal ?? []) {
+        before.add(id)
+      }
+      toastIdsBeforeModalRef.current = before
       return
     }
     if (toasts.some((toast) => !known.has(toast.id))) {
