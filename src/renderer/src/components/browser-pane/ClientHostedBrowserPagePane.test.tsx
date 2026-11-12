@@ -74,6 +74,7 @@ import { normalizeBrowserNavigationUrl } from '../../../../shared/browser-url'
 import { requestBrowserFocus } from './host-guest/browser-focus'
 import {
   installClientHostedPaneApi,
+  paneChannel,
   reportClientHostedGuestMetadata
 } from './client-hosted-browser-pane-test-rig'
 import {
@@ -91,7 +92,6 @@ import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from '../../../../main/runti
 import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-types'
 import type { RemoteRuntimeSharedConnectionDiagnostics } from '../../../../shared/remote-runtime/control/remote-runtime-shared-control-types'
-import { paneChannel } from './client-hosted-browser-pane-test-rig'
 import { ClientHostedBrowserPagePane } from './ClientHostedBrowserPagePane'
 
 function render(ui: React.ReactElement<{ browserTab: BrowserPage }>) {

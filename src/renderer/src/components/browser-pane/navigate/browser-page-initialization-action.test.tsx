@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, expect, it } from 'vitest'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import {
   createSessionTabsTabDeltaEncoder,
   createSessionTabsTabDeltaDecoder
@@ -8,10 +8,23 @@ import {
 import { SESSION_TABS_TAB_DELTA_RUNTIME_CAPABILITY } from '../../../../../shared/session-tabs-runtime-capabilities'
 import { buildPersistedBrowserPagesByWorkspace } from '@/lib/workspace/persistence/workspace-session-browser-tabs'
 import { useAppStore } from '@/store'
+import type { RemoteBrowserPageHandle } from '@/store/slices/browser/browser-slice-contract'
 import type { RuntimeMobileSessionTabsResult } from '../../../../../shared/runtime-session-contracts'
 import { applyWebRuntimeSessionTabsAnswer } from '@/runtime/web-session-tabs-sync/inventory/web-runtime-session-snapshot'
-import { installBrowserInitializationPresentationLifetime } from '@/runtime/web-session-tabs-sync/browser-initialization-presentation'
+import { createSessionWriteSubscriber } from '@/lib/workspace/persistence/session-write-subscriber'
+import {
+  captureBrowserInitializationDelivery,
+  isBrowserInitializationDeliveryCurrent,
+  installBrowserInitializationPresentationLifetime
+} from '@/runtime/web-session-tabs-sync/browser-initialization-presentation'
 import { listRemoteRuntimeSessionTabsDeduped } from '@/runtime/web-session-tabs-sync/inventory/remote-runtime-session-tabs-inflight'
+import { handleGlobalSessionEvent } from '@/runtime/web-session-tabs-sync/global-session-events'
+import { VisibilityResumeCoordinator } from '@/runtime/web-session-tabs-sync/visibility-resume-coordinator'
+import {
+  clearWebSessionTabsTrackingForEnvironment,
+  getWebSessionTabsTrackingGeneration
+} from '@/runtime/web-session-tabs-sync/tracking-lifecycle'
+import { getRuntimeEnvironmentRevision } from '@/runtime/rpc/environment-revisions/runtime-environment-revision'
 import { nextReceivedSessionTabsFrame } from '@/runtime/web-session-tabs-sync/state'
 import { replaceRuntimeEnvironmentRevisions } from '@/runtime/rpc/environment-revisions/runtime-environment-revision'
 import { resetBrowserClientHostIdForTests } from '@/runtime/browser/client-hosting/browser-client-host-identity'
@@ -32,65 +45,16 @@ import {
   hasBrowserPageInitializationAction
 } from './browser-page-deferred-navigation'
 
+import {
+  PLACEMENT,
+  WS,
+  snapshot,
+  response,
+  publish,
+  page
+} from './browser-page-initialization-test-rig'
+
 installFrameOrderingHarness()
-const PLACEMENT = {
-  kind: 'client' as const,
-  browserHostClientId: 'host-a',
-  browserHostGeneration: 1,
-  pageHostGeneration: 0
-}
-const WS = 'browser-workspace-a'
-function snapshot(
-  url: string,
-  version: number,
-  state: 'pending' | 'stopped' | null = 'pending'
-): RuntimeMobileSessionTabsResult {
-  return {
-    worktree: WT,
-    publicationEpoch: 'epoch-a',
-    snapshotVersion: version,
-    activeGroupId: 'host-group-a',
-    activeTabId: 'tab-a',
-    activeTabType: 'browser',
-    tabs: [
-      {
-        type: 'browser',
-        id: 'tab-a',
-        title: url,
-        browserWorkspaceId: WS,
-        browserPageId: 'page-a',
-        placement: PLACEMENT,
-        url,
-        initializationState: state ?? undefined,
-        loading: state === 'pending',
-        canGoBack: false,
-        canGoForward: false,
-        isActive: true
-      }
-    ]
-  }
-}
-const response = (result: RuntimeMobileSessionTabsResult) => ({
-  id: 'answer',
-  ok: true,
-  result,
-  _meta: { runtimeId: 'runtime-a' }
-})
-async function publish(
-  frame: RuntimeMobileSessionTabsResult,
-  receivedFrame = nextReceivedSessionTabsFrame()
-) {
-  await act(async () => {
-    await applyWebRuntimeSessionTabsAnswer(ENV, WT, {
-      snapshot: frame,
-      receivedFrame,
-      runtimeId: 'runtime-a'
-    })
-  })
-}
-function page() {
-  return useAppStore.getState().browserPagesByWorkspace[WS]?.[0]
-}
 function submitter() {
   const requests: Promise<void>[] = []
   const hook = renderHook(() =>
@@ -126,13 +90,17 @@ function submitter() {
 }
 
 let stopLifetime = () => {}
-let diagnostics: Parameters<typeof window.api.runtimeEnvironments.onSharedControlDiagnostics>[0]
+let diagnostics: Parameters<
+  NonNullable<typeof window.api.runtimeEnvironments.onSharedControlDiagnostics>
+>[0]
 afterEach(() => stopLifetime())
 beforeEach(async () => {
   Object.assign(window.api.runtimeEnvironments, {
     onSharedControlDiagnostics: (callback: typeof diagnostics) => {
       diagnostics = callback
-      return () => {}
+      return () => {
+        diagnostics = () => {}
+      }
     }
   })
   stopLifetime = installBrowserInitializationPresentationLifetime()
@@ -466,6 +434,354 @@ it.each([750, 7500])(
       expect(publications).toBe(1)
     } finally {
       unsubscribe()
+    }
+  }
+)
+
+it.each([10, 100])(
+  'keeps held presentation stable over %s unrelated received frames and still publishes Stop',
+  async (count) => {
+    vi.useFakeTimers()
+    useAppStore.setState({ workspaceSessionReady: true, hydrationSucceeded: true })
+    const persist = vi.fn()
+    const stopPersistence = createSessionWriteSubscriber({ store: useAppStore, persist })
+    await vi.advanceTimersByTimeAsync(200)
+    persist.mockClear()
+    const render = vi.fn()
+    const hook = renderHook(() => {
+      const presentation = useAppStore(
+        (s) => s.remoteBrowserPageHandlesByPageId['page-a']?.initializationPresentation
+      )
+      render()
+      return presentation?.disposition
+    })
+    render.mockClear()
+    const handles = useAppStore.getState().remoteBrowserPageHandlesByPageId
+    let handleWrites = 0
+    const unsubscribe = useAppStore.subscribe((s, previous) => {
+      if (s.remoteBrowserPageHandlesByPageId !== previous.remoteBrowserPageHandlesByPageId) {
+        handleWrites++
+      }
+    })
+    try {
+      for (let i = 0; i < count; i++) {
+        await publish(snapshot('https://example.internal/S', i + 2))
+        await vi.advanceTimersByTimeAsync(200)
+      }
+      expect(useAppStore.getState().remoteBrowserPageHandlesByPageId).toBe(handles)
+      expect(handleWrites).toBe(0)
+      expect(render).not.toHaveBeenCalled()
+      expect(persist).not.toHaveBeenCalled()
+      await publish(snapshot('https://example.internal/S', count + 2, 'stopped'))
+      expect(handleWrites).toBe(1)
+      expect(hook.result.current).toBe('stopped')
+      await vi.advanceTimersByTimeAsync(200)
+      expect(persist).toHaveBeenCalledTimes(1)
+    } finally {
+      unsubscribe()
+      hook.unmount()
+      stopPersistence()
+      vi.useRealTimers()
+    }
+  }
+)
+
+it('does not reauthorize pending from a retired-publisher census dispatched before loss', async () => {
+  const coordinator = new VisibilityResumeCoordinator({
+    environments: [],
+    environmentIdBySubscriptionSpec: [],
+    omissions: new Map(),
+    activeRuntimeWorktreeKey: () => null
+  })
+  const globalFrame = async (epoch: string, version: number) => {
+    await act(async () => {
+      handleGlobalSessionEvent({
+        environmentId: ENV,
+        expectedEnvironmentConnectionGeneration: 1,
+        expectedEnvironmentPairingRevision: getRuntimeEnvironmentRevision(ENV),
+        expectedTrackingGeneration: getWebSessionTabsTrackingGeneration(ENV),
+        visibilityGeneration: 0,
+        isCurrent: () => true,
+        event: {
+          ...snapshot('https://example.internal/S', version),
+          publicationEpoch: epoch,
+          type: 'snapshot'
+        },
+        response: response({
+          ...snapshot('https://example.internal/S', version),
+          publicationEpoch: epoch
+        }),
+        awaitingVisibilityResumeInventory: { value: false },
+        coordinator
+      })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+  }
+  vi.useFakeTimers()
+  try {
+    await globalFrame('epoch-b', 1)
+    await globalFrame('epoch-a', 2)
+    const census = Promise.withResolvers<unknown>()
+    runtimeCall.mockImplementationOnce(() => census.promise)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250)
+    })
+    expect(runtimeCall).toHaveBeenCalledWith(
+      expect.objectContaining({ method: 'session.tabs.listAll' })
+    )
+    act(() =>
+      diagnostics({
+        environmentId: ENV,
+        transportGeneration: 1,
+        diagnostics: {
+          state: 'closed',
+          pendingRequestCount: 0,
+          subscriptionCount: 1,
+          reconnectAttempt: 0,
+          lastConnectedAt: 1,
+          lastClose: null,
+          lastError: null
+        }
+      })
+    )
+    await act(async () => {
+      census.resolve({
+        id: 'census',
+        ok: true,
+        result: { authoritative: true, snapshots: [snapshot('https://example.internal/S', 3)] },
+        _meta: { runtimeId: 'runtime-a' }
+      })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    expect(
+      useAppStore.getState().remoteBrowserPageHandlesByPageId['page-a']?.initializationPresentation
+        ?.disposition
+    ).toBe('unavailable')
+    await globalFrame('epoch-c', 1)
+    expect(
+      useAppStore.getState().remoteBrowserPageHandlesByPageId['page-a']?.initializationPresentation
+        ?.disposition
+    ).toBe('pending')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+it('does not persist delivery presentation but still saves changed browser ownership and staged visibility', async () => {
+  vi.useFakeTimers()
+  useAppStore.setState({ workspaceSessionReady: true, hydrationSucceeded: true })
+  const persist = vi.fn()
+  const stop = createSessionWriteSubscriber({ store: useAppStore, persist })
+  try {
+    await vi.advanceTimersByTimeAsync(200)
+    persist.mockClear()
+    act(() =>
+      diagnostics({
+        environmentId: ENV,
+        transportGeneration: 1,
+        diagnostics: {
+          state: 'closed',
+          pendingRequestCount: 0,
+          subscriptionCount: 1,
+          reconnectAttempt: 0,
+          lastConnectedAt: 1,
+          lastClose: null,
+          lastError: null
+        }
+      })
+    )
+    await vi.advanceTimersByTimeAsync(200)
+    expect(persist).not.toHaveBeenCalled()
+    await publish(snapshot('https://example.internal/S', 2))
+    await vi.advanceTimersByTimeAsync(200)
+    expect(persist).not.toHaveBeenCalled()
+    const updateHandle = (patch: Partial<RemoteBrowserPageHandle>) => {
+      useAppStore.setState((s) => ({
+        remoteBrowserPageHandlesByPageId: {
+          ...s.remoteBrowserPageHandlesByPageId,
+          'page-a': { ...s.remoteBrowserPageHandlesByPageId['page-a'], ...patch }
+        }
+      }))
+    }
+    updateHandle({ remotePageId: 'replacement-identity' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(persist).toHaveBeenCalledTimes(1)
+    expect(persist.mock.calls[0][0].patch.browserPagesByWorkspace[WS][0]).toMatchObject({
+      url: 'https://example.internal/S',
+      remoteBrowserPageId: 'replacement-identity',
+      remoteBrowserPageClientHosted: true
+    })
+    persist.mockClear()
+    updateHandle({ staged: true })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(persist.mock.calls[0][0].patch.browserPagesByWorkspace[WS]).toBeUndefined()
+    persist.mockClear()
+    updateHandle({ staged: undefined })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(persist.mock.calls[0][0].patch.browserPagesByWorkspace[WS][0].remoteBrowserPageId).toBe(
+      'replacement-identity'
+    )
+  } finally {
+    stop()
+    vi.useRealTimers()
+  }
+})
+
+it.each([750, 7500])(
+  'revokes retained pending after tracking clears with %s unrelated handles',
+  (count) => {
+    const retained = useAppStore.getState().remoteBrowserPageHandlesByPageId['page-a']
+    const committed = { ...retained, initializationPresentation: undefined }
+    const unrelated = { ...retained, environmentId: 'unrelated-environment' }
+    const handles: Record<string, RemoteBrowserPageHandle> = { 'page-a': retained, committed }
+    for (let i = 0; i < count; i++) {
+      handles[`unrelated-${i}`] = unrelated
+    }
+    let enumerations = 0
+    let reads = 0
+    const counted = new Proxy(handles, {
+      ownKeys: (target) => {
+        enumerations++
+        return Reflect.ownKeys(target)
+      },
+      get: (target, key, receiver) => {
+        reads++
+        return Reflect.get(target, key, receiver)
+      }
+    })
+    useAppStore.setState({ remoteBrowserPageHandlesByPageId: counted })
+    clearWebSessionTabsTrackingForEnvironment(ENV)
+    expect(useAppStore.getState().remoteBrowserPageHandlesByPageId['page-a']).toBe(retained)
+    enumerations = 0
+    reads = 0
+    let publications = 0
+    const stop = useAppStore.subscribe(() => {
+      publications++
+    })
+    const event = {
+      environmentId: ENV,
+      transportGeneration: 1,
+      diagnostics: {
+        state: 'closed' as const,
+        pendingRequestCount: 0,
+        subscriptionCount: 1,
+        reconnectAttempt: 0,
+        lastConnectedAt: 1,
+        lastClose: null,
+        lastError: null
+      }
+    }
+    try {
+      act(() => diagnostics(event))
+      expect(enumerations).toBe(2) // One selection and one immutable copy.
+      expect(reads).toBe(2 * (count + 2))
+      expect(publications).toBe(1)
+      expect(
+        useAppStore.getState().remoteBrowserPageHandlesByPageId['page-a'].initializationPresentation
+          ?.disposition
+      ).toBe('unavailable')
+      expect(useAppStore.getState().remoteBrowserPageHandlesByPageId.committed).toBe(committed)
+      expect(useAppStore.getState().remoteBrowserPageHandlesByPageId['unrelated-0']).toBe(unrelated)
+      expect(page()?.url).toBe('https://example.internal/S')
+      act(() => diagnostics(event))
+      expect(enumerations).toBe(2)
+      expect(publications).toBe(1)
+    } finally {
+      stop()
+    }
+  }
+)
+
+it.each(['retirement', 'teardown'] as const)(
+  'batches multiple environments on %s and preserves a successor against stale diagnostics',
+  (kind) => {
+    const environments = [ENV, 'second-environment', 'third-environment']
+    replaceRuntimeEnvironmentRevisions(
+      environments.map((id) => ({
+        id,
+        createdAt: 0,
+        pairingRevision: getRuntimeEnvironmentRevision(id) ?? 1
+      }))
+    )
+    const original = useAppStore.getState().remoteBrowserPageHandlesByPageId['page-a']
+    const deliveries = environments.map((id) => captureBrowserInitializationDelivery(id))
+    const handles: Record<string, RemoteBrowserPageHandle> = {}
+    for (let i = 0; i < environments.length; i++) {
+      handles[`batch-${i}`] = {
+        ...original,
+        environmentId: environments[i],
+        remotePageId: `batch-${i}`,
+        initializationPresentation: {
+          disposition: 'pending',
+          delivery: deliveries[i],
+          receivedFrame: 1
+        }
+      }
+    }
+    // A closed page has no retained handle and must not be recreated.
+    let enumerations = 0
+    useAppStore.setState({
+      remoteBrowserPageHandlesByPageId: new Proxy(handles, {
+        ownKeys: (target) => {
+          enumerations++
+          return Reflect.ownKeys(target)
+        }
+      })
+    })
+    let publications = 0
+    const stop = useAppStore.subscribe(() => {
+      publications++
+    })
+    try {
+      if (kind === 'retirement') {
+        replaceRuntimeEnvironmentRevisions([])
+      } else {
+        stopLifetime()
+        stopLifetime = () => {}
+      }
+      expect(enumerations).toBe(2)
+      expect(publications).toBe(1)
+      expect(
+        deliveries.every((delivery) => !isBrowserInitializationDeliveryCurrent(delivery))
+      ).toBe(true)
+      for (let i = 0; i < environments.length; i++) {
+        expect(
+          useAppStore.getState().remoteBrowserPageHandlesByPageId[`batch-${i}`]
+            .initializationPresentation?.disposition
+        ).toBe('unavailable')
+      }
+      expect(useAppStore.getState().remoteBrowserPageHandlesByPageId.closed).toBeUndefined()
+      const successor = captureBrowserInitializationDelivery(ENV)
+      useAppStore.setState((s) => ({
+        remoteBrowserPageHandlesByPageId: {
+          ...s.remoteBrowserPageHandlesByPageId,
+          'batch-0': {
+            ...s.remoteBrowserPageHandlesByPageId['batch-0'],
+            initializationPresentation: {
+              disposition: 'pending',
+              delivery: successor,
+              receivedFrame: 2
+            }
+          }
+        }
+      }))
+      const before = useAppStore.getState().remoteBrowserPageHandlesByPageId
+      diagnostics({
+        environmentId: ENV,
+        transportGeneration: -2,
+        diagnostics: {
+          state: 'closed',
+          pendingRequestCount: 0,
+          subscriptionCount: 1,
+          reconnectAttempt: 0,
+          lastConnectedAt: 1,
+          lastClose: null,
+          lastError: null
+        }
+      })
+      expect(useAppStore.getState().remoteBrowserPageHandlesByPageId).toBe(before)
+    } finally {
+      stop()
     }
   }
 )

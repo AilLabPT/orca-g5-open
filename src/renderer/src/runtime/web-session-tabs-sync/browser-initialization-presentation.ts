@@ -94,11 +94,7 @@ export function browserInitializationPresentation(
     return undefined
   }
   const prior = previous?.initializationPresentation
-  if (
-    prior?.delivery === receipt.delivery &&
-    prior.receivedFrame === receipt.receivedFrame &&
-    prior.disposition === tab.initializationState
-  ) {
+  if (prior?.delivery === receipt.delivery && prior.disposition === tab.initializationState) {
     return prior
   }
   return { ...receipt, disposition: tab.initializationState }
@@ -118,27 +114,39 @@ export function browserInitializationReceiptCurrent(
   return Boolean(receipt && isBrowserInitializationDeliveryCurrent(receipt.delivery))
 }
 
-function revokeBrowserInitializationDelivery(environmentId: string, remove = false): void {
-  const entry = deliveries.get(environmentId)
-  if (!entry) {
-    return
+function revokeBrowserInitializationDeliveries(
+  environmentIds: Iterable<string>,
+  remove = false
+): void {
+  const affected = new Set<string>()
+  for (const environmentId of environmentIds) {
+    const entry = deliveries.get(environmentId)
+    if (!entry || (entry.lost && !remove)) {
+      continue
+    }
+    entry.lost = true
+    entry.delivery.live = false
+    if (remove) {
+      deliveries.delete(environmentId)
+    }
+    affected.add(environmentId)
   }
-  if (entry.lost && !remove) {
+  if (affected.size === 0) {
     return
-  }
-  entry.lost = true
-  entry.delivery.live = false
-  if (remove) {
-    deliveries.delete(environmentId)
   }
   useAppStore.setState((state) => {
     let handles = state.remoteBrowserPageHandlesByPageId
-    for (const [pageId, handle] of Object.entries(handles)) {
+    for (const pageId in state.remoteBrowserPageHandlesByPageId) {
+      if (!Object.hasOwn(state.remoteBrowserPageHandlesByPageId, pageId)) {
+        continue
+      }
+      const handle = state.remoteBrowserPageHandlesByPageId[pageId]
       const presentation = handle.initializationPresentation
       if (
-        handle.environmentId !== environmentId ||
+        !affected.has(handle.environmentId) ||
         !presentation ||
-        presentation.disposition === 'unavailable'
+        presentation.disposition === 'unavailable' ||
+        isBrowserInitializationDeliveryCurrent(presentation.delivery)
       ) {
         continue
       }
@@ -159,27 +167,25 @@ function revokeBrowserInitializationDelivery(environmentId: string, remove = fal
 
 /** The app lifetime observes transport death even while workspace subscriptions are parked. */
 export function installBrowserInitializationPresentationLifetime(): () => void {
-  const stopDiagnostics = window.api.runtimeEnvironments.onSharedControlDiagnostics?.(
+  const stopDiagnostics = window.api?.runtimeEnvironments?.onSharedControlDiagnostics?.(
     ({ environmentId, transportGeneration, diagnostics }) => {
       const entry = deliveries.get(environmentId)
       if (!entry || transportGeneration < entry.transportGeneration) {
         return
       }
       if (transportGeneration > entry.transportGeneration && entry.transportGeneration !== -1) {
-        revokeBrowserInitializationDelivery(environmentId)
+        revokeBrowserInitializationDeliveries([environmentId])
       }
       entry.transportGeneration = transportGeneration
       if (diagnostics.state === 'closed' || diagnostics.state === 'reconnecting') {
-        revokeBrowserInitializationDelivery(environmentId)
+        revokeBrowserInitializationDeliveries([environmentId])
       } else if (diagnostics.state === 'ready') {
         entry.lost = false
       }
     }
   )
   const retire = (ids: readonly string[]): void => {
-    for (const id of ids) {
-      revokeBrowserInitializationDelivery(id, true)
-    }
+    revokeBrowserInitializationDeliveries(ids, true)
   }
   const stopRetirement = onRuntimeEnvironmentsRetired(retire)
   const stopPairing = onRuntimeEnvironmentRevisionsChanged(retire)
@@ -187,6 +193,7 @@ export function installBrowserInitializationPresentationLifetime(): () => void {
     if (state.runtimeStatusByEnvironmentId === previous.runtimeStatusByEnvironmentId) {
       return
     }
+    const retired: string[] = []
     for (const [id] of deliveries) {
       const snapshot = state.runtimeStatusByEnvironmentId.get(id)?.snapshot
       if (
@@ -194,17 +201,16 @@ export function installBrowserInitializationPresentationLifetime(): () => void {
         (snapshot.retired || snapshot.verification === 'blocked') &&
         snapshot.pairingRevision === getRuntimeEnvironmentRevision(id)
       ) {
-        revokeBrowserInitializationDelivery(id, true)
+        retired.push(id)
       }
     }
+    revokeBrowserInitializationDeliveries(retired, true)
   })
   return () => {
     stopDiagnostics?.()
     stopRetirement()
     stopPairing()
     stopStatus()
-    for (const id of deliveries.keys()) {
-      revokeBrowserInitializationDelivery(id, true)
-    }
+    revokeBrowserInitializationDeliveries(deliveries.keys(), true)
   }
 }
