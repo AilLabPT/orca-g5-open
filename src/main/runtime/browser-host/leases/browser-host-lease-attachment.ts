@@ -1,14 +1,16 @@
 import type { BrowserHostGenerationCounter } from './browser-host-generation-counter'
 import type { BrowserHostLeaseReconnectController } from './browser-host-lease-reconnect'
-import type { BrowserHostLeaseHandle } from './browser-host-lease-records'
-import { assertBrowserHostLeaseAdmission } from './browser-host-lease-records'
+import {
+  assertBrowserHostLeaseAdmission,
+  type BrowserHostLeaseHandle,
+  type BrowserHostLeaseState
+} from './browser-host-lease-records'
 import { snapshotBrowserHostPageInventory } from '../reconciliation/browser-host-page-inventory-snapshot'
 
 import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import { BrowserHostCommandLedger } from '../commands/browser-host-command-ledger'
 import { BrowserExecutionHostGrantRegistry } from './browser-execution-host-grant-registry'
 import { createBrowserHostFence } from './browser-host-lease-fence'
-import type { BrowserHostLeaseState } from './browser-host-lease-records'
 
 export type BrowserHostLeaseAttachInput = {
   browserHostClientId: string

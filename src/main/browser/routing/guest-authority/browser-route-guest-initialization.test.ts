@@ -1,5 +1,4 @@
 import { EventEmitter } from 'node:events'
-import type { WebContents } from 'electron'
 import { expect, it, vi } from 'vitest'
 import { initializeBrowserRouteGuest } from './browser-route-guest-initialization'
 
@@ -9,15 +8,13 @@ it.each([
 ])(
   'accepts the requested main-frame commit before load finishes: %s',
   async (url, committedUrl) => {
-    const guest = new EventEmitter() as EventEmitter & {
-      loadURL: ReturnType<typeof vi.fn>
-      stop: ReturnType<typeof vi.fn>
-    }
     const load = Promise.withResolvers<void>()
-    guest.loadURL = vi.fn(() => load.promise)
-    guest.stop = vi.fn()
+    const guest = Object.assign(new EventEmitter(), {
+      loadURL: vi.fn(() => load.promise),
+      stop: vi.fn()
+    })
     const initialized = initializeBrowserRouteGuest(
-      guest as unknown as WebContents,
+      guest,
       url,
       new AbortController().signal,
       () => true
@@ -33,15 +30,13 @@ it.each([
 )
 
 it('uses a committed error destination and rejects cancellation or lost authority', async () => {
-  const guest = new EventEmitter() as EventEmitter & {
-    loadURL: ReturnType<typeof vi.fn>
-    stop: ReturnType<typeof vi.fn>
-  }
-  guest.loadURL = vi.fn(() => new Promise<void>(() => {}))
-  guest.stop = vi.fn()
+  const guest = Object.assign(new EventEmitter(), {
+    loadURL: vi.fn(() => new Promise<void>(() => {})),
+    stop: vi.fn()
+  })
   const controller = new AbortController()
   const error = initializeBrowserRouteGuest(
-    guest as unknown as WebContents,
+    guest,
     'https://example.test/',
     controller.signal,
     () => true
@@ -55,18 +50,13 @@ it('uses a committed error destination and rejects cancellation or lost authorit
     true
   )
   await expect(error).resolves.toBe('https://example.test/redirect')
-  const cancelled = initializeBrowserRouteGuest(
-    guest as unknown as WebContents,
-    'about:blank',
-    controller.signal,
-    () => true
-  )
+  const cancelled = initializeBrowserRouteGuest(guest, 'about:blank', controller.signal, () => true)
   controller.abort()
   await expect(cancelled).rejects.toThrow('browser_client_page_initialization_failed')
   expect(guest.stop).toHaveBeenCalledOnce()
   let current = true
   const stale = initializeBrowserRouteGuest(
-    guest as unknown as WebContents,
+    guest,
     'about:blank',
     new AbortController().signal,
     () => current

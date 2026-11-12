@@ -127,7 +127,7 @@ export function sameInitializationPlacement(
     pageHostGeneration?: number
   },
   right: RuntimeBrowserClientPlacement
-): boolean {
+): left is RuntimeBrowserClientPlacement {
   return (
     left.kind === 'client' &&
     left.browserHostClientId === right.browserHostClientId &&

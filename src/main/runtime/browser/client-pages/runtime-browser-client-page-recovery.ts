@@ -1,5 +1,4 @@
 import { recoverClientPagesWithConcurrency } from './runtime-browser-client-page-recovery-queue'
-import type { BrowserHostLease } from '../../browser-host/leases/browser-host-lease-records'
 import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import { admitRuntimeBrowserPageInitialization } from './runtime-browser-page-initialization'
 import {
@@ -90,7 +89,7 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
       const previous = inventoryByPageId.get(page.browserPageId)
       admitRuntimeBrowserPageInitialization({
         ...options,
-        lease: options.lease as BrowserHostLease,
+        lease: options.lease,
         page,
         url: previous?.currentUrl ?? page.url,
         ...(previous ? { previous } : {}),

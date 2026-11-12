@@ -1,9 +1,11 @@
-import type { BrowserHostCommandResultIdentity } from '../leases/browser-host-lease-records'
-import { requireBrowserHostCommandResultLedger } from '../leases/browser-host-lease-records'
+import {
+  requireBrowserHostCommandResultLedger,
+  type BrowserHostCommandResultIdentity,
+  type BrowserHostLeaseState
+} from '../leases/browser-host-lease-records'
 import type { BrowserHostCommandResultParams } from './browser-host-command-state'
 import type { BrowserClientHostCommandEvent } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type { BrowserClientAutomationResult as BrowserClientHostCommandResult } from '../../../../shared/browser/client-hosting/browser-client-automation-protocol'
-import type { BrowserHostLeaseState } from '../leases/browser-host-lease-records'
 import { assertBrowserHostPageCommandAdmission } from './browser-host-page-command-admission'
 import type { BrowserClientPageAuthority } from '../reconciliation/browser-host-page-placement'
 

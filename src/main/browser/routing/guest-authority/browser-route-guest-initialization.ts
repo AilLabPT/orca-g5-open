@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'node:events'
 import type { BrowserRouteGuestLifecycleClaim } from './browser-route-page-authority'
 import type { BrowserRouteGuestState } from './browser-route-webcontents-state'
 import type { WebContents } from 'electron'
@@ -5,7 +6,7 @@ import { normalizeBrowserNavigationUrl } from '../../../../shared/browser-url'
 
 /** The controlled bootstrap document has finished and stopped before this owner starts. */
 export function initializeBrowserRouteGuest(
-  guest: WebContents,
+  guest: Pick<WebContents, 'loadURL' | 'stop'> & Pick<EventEmitter, 'on' | 'removeListener'>,
   rawUrl: string,
   signal: AbortSignal,
   isCurrent: () => boolean

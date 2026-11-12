@@ -1,6 +1,6 @@
 import { sameRuntimeBrowserPlacement } from '../../../../shared/runtime-browser-placement'
 import type { BrowserHostLeaseRegistry } from '../../browser-host/leases/browser-host-lease-registry'
-import type { BrowserHostLease } from '../../browser-host/leases/browser-host-lease-records'
+import type { BrowserHostLeaseIdentity } from '../../browser-host/leases/browser-host-lease-records'
 import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type {
   RuntimeBrowserClientPage,
@@ -10,7 +10,7 @@ import type { BrowserExecutionHostKeyResolution } from './runtime-browser-client
 
 export function admitRuntimeBrowserPageInitialization(input: {
   authority: Pick<BrowserHostLeaseRegistry, 'admitClientPageInitialization'>
-  lease: BrowserHostLease
+  lease: BrowserHostLeaseIdentity
   pages: RuntimeBrowserPageRegistry
   page: RuntimeBrowserClientPage
   previous?: BrowserClientHostedPageInventory

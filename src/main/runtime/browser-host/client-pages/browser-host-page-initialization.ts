@@ -215,7 +215,7 @@ export class BrowserHostPageInitializations {
         if (!sameInitializationPlacement(previous, input.expected)) {
           throw new Error('browser_page_placement_stale')
         }
-        this.retirePlacement(input.browserPageId, previous as RuntimeBrowserClientPlacement)
+        this.retirePlacement(input.browserPageId, previous)
       }
       operation.cleanup = async (cleanupState) => {
         await closeInitializationReplacement(operation, cleanupState)

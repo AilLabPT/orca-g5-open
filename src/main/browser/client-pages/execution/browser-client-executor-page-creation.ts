@@ -11,8 +11,10 @@ import {
   BrowserClientPageCommandError,
   isBrowserClientPageCleanupFailure
 } from './browser-client-page-command-failure'
-import type { BrowserClientPageInitializations } from './browser-client-page-initializations'
-import type { PageInitialization } from './browser-client-page-initializations'
+import type {
+  BrowserClientPageInitializations,
+  PageInitialization
+} from './browser-client-page-initializations'
 import { assertBrowserClientPageAdmission } from '../lifecycle/browser-client-page-admission'
 import { createBrowserClientPageInventory } from '../lifecycle/browser-client-page-inventory'
 import { createReservedBrowserClientPage } from '../lifecycle/browser-client-page-creation'
