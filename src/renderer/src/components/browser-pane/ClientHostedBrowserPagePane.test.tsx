@@ -76,6 +76,22 @@ import {
   installClientHostedPaneApi,
   reportClientHostedGuestMetadata
 } from './client-hosted-browser-pane-test-rig'
+import {
+  captureBrowserInitializationDelivery,
+  installBrowserInitializationPresentationLifetime,
+  recordBrowserInitializationReceipt
+} from '@/runtime/web-session-tabs-sync/browser-initialization-presentation'
+import { applyWebSessionTabsSnapshot } from '@/runtime/web-session-tabs-sync/snapshot-api'
+import { nextReceivedSessionTabsFrame } from '@/runtime/web-session-tabs-sync/state'
+import { BrowserHostLeaseRegistry } from '../../../../main/runtime/browser-host/leases/browser-host-lease-registry'
+import { RuntimeBrowserPageRegistry } from '../../../../main/runtime/browser/client-pages/runtime-browser-page-registry'
+import { recoverUnavailableRuntimeBrowserClientPages } from '../../../../main/runtime/browser/client-pages/runtime-browser-client-page-recovery'
+import { buildRuntimeClientBrowserTabs } from '../../../../main/runtime/session-lifecycle/projection/build-runtime-client-browser-tabs'
+import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from '../../../../main/runtime/browser/client-pages/client-hosted-browser-page-persistence'
+import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
+import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-types'
+import type { RemoteRuntimeSharedConnectionDiagnostics } from '../../../../shared/remote-runtime/control/remote-runtime-shared-control-types'
+import { paneChannel } from './client-hosted-browser-pane-test-rig'
 import { ClientHostedBrowserPagePane } from './ClientHostedBrowserPagePane'
 
 function render(ui: React.ReactElement<{ browserTab: BrowserPage }>) {
@@ -86,6 +102,7 @@ function render(ui: React.ReactElement<{ browserTab: BrowserPage }>) {
 
 describe('ClientHostedBrowserPagePane', () => {
   beforeEach(() => {
+    useAppStore.setState({ remoteBrowserPageHandlesByPageId: {} })
     mocks.attach.mockReset()
     mocks.restoredPageUnrecovered = false
     mocks.realRecoveryWindow = false
@@ -110,6 +127,11 @@ describe('ClientHostedBrowserPagePane', () => {
             environmentId: 'environment-a',
             remotePageId: 'page-a',
             restoredFromSession: true,
+            initializationPresentation: {
+              disposition: 'pending',
+              receivedFrame: 1,
+              delivery: captureBrowserInitializationDelivery('environment-a')
+            },
             placement: placement ?? { ...PLACEMENT, pageHostGeneration: 0 }
           }
         },
@@ -120,7 +142,6 @@ describe('ClientHostedBrowserPagePane', () => {
       const pending = {
         ...page(),
         url: 'https://example.internal/saved',
-        initializationState: 'pending' as const,
         loading: true
       }
       const pane = (browserTab: BrowserPage, currentPlacement = placement) => (
@@ -150,14 +171,224 @@ describe('ClientHostedBrowserPagePane', () => {
       expect(mocks.initializationAction).toHaveBeenLastCalledWith(
         expect.objectContaining({ action: { type: 'stop' } })
       )
-      const stopped = { ...pending, initializationState: 'stopped' as const, loading: false }
+      act(() =>
+        useAppStore.setState((s) => ({
+          remoteBrowserPageHandlesByPageId: {
+            ...s.remoteBrowserPageHandlesByPageId,
+            'page-a': {
+              ...s.remoteBrowserPageHandlesByPageId['page-a'],
+              initializationPresentation: {
+                disposition: 'stopped',
+                receivedFrame: 2,
+                delivery: captureBrowserInitializationDelivery('environment-a')
+              }
+            }
+          }
+        }))
+      )
+      const stopped = { ...pending, loading: false }
       view.rerender(pane(stopped))
       expect(screen.queryByText('Reopen')).toBeNull()
       expect(screen.getByRole('button', { name: 'Reload' })).not.toBeNull()
       const { webview } = createWebview()
       mocks.attach.mockReturnValue(retainedAttachment(webview))
-      view.rerender(pane({ ...stopped, initializationState: undefined }, PLACEMENT))
+      act(() =>
+        useAppStore.setState((s) => ({
+          remoteBrowserPageHandlesByPageId: {
+            ...s.remoteBrowserPageHandlesByPageId,
+            'page-a': {
+              ...s.remoteBrowserPageHandlesByPageId['page-a'],
+              initializationPresentation: undefined
+            }
+          }
+        }))
+      )
+      view.rerender(pane(stopped, PLACEMENT))
       expect(mocks.attach).toHaveBeenCalled()
+    }
+  )
+
+  it.each([false, true])(
+    'revokes a projected held page on actual transport loss and waits for a fresh page before attaching (null placement %s)',
+    async (nullPlacement) => {
+      const diagnostics = paneChannel<{
+        environmentId: string
+        transportGeneration: number
+        diagnostics: RemoteRuntimeSharedConnectionDiagnostics
+      }>()
+      installClientHostedPaneApi({
+        runtimeEnvironments: { onSharedControlDiagnostics: diagnostics.subscribe }
+      })
+      useAppStore.setState({
+        browserTabsByWorktree: {},
+        browserPagesByWorkspace: {},
+        remoteBrowserPageHandlesByPageId: {},
+        unifiedTabsByWorktree: {},
+        groupsByWorktree: {},
+        layoutByWorktree: {},
+        runtimeStatusByEnvironmentId: new Map()
+      })
+      const stopLifetime = installBrowserInitializationPresentationLifetime()
+      const authority = new BrowserHostLeaseRegistry({
+        authorityRuntimeId: 'runtime-a',
+        authorityEpoch: 'epoch-a'
+      })
+      const host = authority.attach({
+        browserHostClientId: 'host-a',
+        pairedDeviceId: 'device-a',
+        connectionId: 'connection-a',
+        hostCapabilities: ['webview', 'automation', BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY],
+        pageCommandProtocolVersion: 1,
+        pageInventoryProtocolVersion: 1,
+        pageReconciliationProtocolVersion: 1,
+        pageInventory: []
+      })
+      const pages = new RuntimeBrowserPageRegistry()
+      pages.publishClientPage({
+        browserPageId: 'page-a',
+        workspaceId: 'worktree-a',
+        browserProfileId: 'default',
+        executionHostKey: 'old-key',
+        pairedDeviceId: 'device-a',
+        placement: RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT,
+        url: 'https://example.internal/s-final',
+        loading: false,
+        active: true
+      })
+      const route = Promise.withResolvers<{ status: 'workspace-gone' }>()
+      await recoverUnavailableRuntimeBrowserClientPages({
+        authority,
+        pages,
+        lease: host.lease,
+        notifyWorkspace: () => {},
+        resolveExecutionHostKey: () => route.promise
+      })
+      const frame = (): RuntimeMobileSessionTabsResult => ({
+        worktree: 'worktree-a',
+        publicationEpoch: 'epoch-a',
+        snapshotVersion: 1,
+        activeGroupId: 'group-a',
+        activeTabId: 'page-a',
+        activeTabType: 'browser',
+        tabs: buildRuntimeClientBrowserTabs(pages.listPages(), authority)
+      })
+      const apply = (snapshot: RuntimeMobileSessionTabsResult) => {
+        recordBrowserInitializationReceipt(
+          'environment-a',
+          snapshot,
+          nextReceivedSessionTabsFrame()
+        )
+        act(() =>
+          useAppStore.setState((state) =>
+            applyWebSessionTabsSnapshot(state, snapshot, 'environment-a')
+          )
+        )
+      }
+      const emit = (state: 'closed' | 'reconnecting' | 'ready', generation = 1) =>
+        act(() =>
+          diagnostics.emit({
+            environmentId: 'environment-a',
+            transportGeneration: generation,
+            diagnostics: {
+              state,
+              pendingRequestCount: 0,
+              subscriptionCount: 1,
+              reconnectAttempt: 0,
+              lastConnectedAt: 1,
+              lastClose: null,
+              lastError: null
+            }
+          })
+        )
+      const cached = frame()
+      apply(cached)
+      function CurrentPane() {
+        const current = useAppStore((state) => state.browserPagesByWorkspace['page-a']?.[0])
+        const handle = useAppStore((state) => state.remoteBrowserPageHandlesByPageId['page-a'])
+        return current ? (
+          <ClientHostedBrowserPagePane
+            browserTab={current}
+            workspaceId="page-a"
+            chromeShortcutScope="focused"
+            runtimeEnvironmentId="environment-a"
+            worktreeId="worktree-a"
+            placement={
+              nullPlacement ? null : handle?.placement?.kind === 'client' ? handle.placement : null
+            }
+            isActive
+            onUpdatePageState={(id, patch) =>
+              useAppStore.getState().updateBrowserPageState(id, patch)
+            }
+            onSetUrl={vi.fn()}
+          />
+        ) : null
+      }
+      const view = renderWithProviders(<CurrentPane />, { wrapper: TooltipProvider })
+      try {
+        emit('ready')
+        expect(screen.getByRole('button', { name: 'Stop' })).not.toBeNull()
+        expect(screen.queryByText('Client-hosted browser unavailable')).toBeNull()
+        expect(mocks.attach).not.toHaveBeenCalled()
+        const delayed = frame()
+        recordBrowserInitializationReceipt('environment-a', delayed, nextReceivedSessionTabsFrame())
+        emit('closed')
+        expect(screen.getByText('Client-hosted browser unavailable')).not.toBeNull()
+        expect(screen.queryByText(/Can't reach/)).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+        expect(screen.getByLabelText<HTMLInputElement>('Address').value).toBe(
+          'https://example.internal/s-final'
+        )
+        const afterLoss = useAppStore.getState()
+        emit('reconnecting')
+        expect(useAppStore.getState()).toBe(afterLoss)
+        emit('ready', 2)
+        apply(cached)
+        apply(delayed)
+        expect(screen.getByText('Client-hosted browser unavailable')).not.toBeNull()
+        apply(frame())
+        expect(screen.queryByText('Client-hosted browser unavailable')).toBeNull()
+        expect(screen.getByRole('button', { name: 'Stop' })).not.toBeNull()
+        emit('closed', 1)
+        expect(screen.queryByText('Client-hosted browser unavailable')).toBeNull()
+        // Actual guest metadata supplies current document failure after initialization omission.
+        const { webview } = createWebview()
+        mocks.attach.mockReturnValue(retainedAttachment(webview))
+        reportClientHostedGuestMetadata({
+          webContentsId: 7,
+          url: 'https://example.internal/s-final',
+          errorPage: true,
+          loadError: {
+            code: -105,
+            description: 'Name resolution failed',
+            validatedUrl: 'https://example.internal/s-final'
+          }
+        })
+        const committed = frame()
+        committed.snapshotVersion = 2
+        committed.tabs = committed.tabs.map((tab) =>
+          tab.type === 'browser'
+            ? { ...tab, initializationState: undefined, placement: PLACEMENT, loading: false }
+            : tab
+        )
+        if (!nullPlacement) {
+          apply(committed)
+          expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2)
+          expect(useAppStore.getState().browserPagesByWorkspace['page-a'][0].loadError?.code).toBe(
+            -105
+          )
+          apply({ ...committed, snapshotVersion: 3 })
+          expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(2)
+          expect(useAppStore.getState().browserPagesByWorkspace['page-a'][0].loadError?.code).toBe(
+            -105
+          )
+        }
+      } finally {
+        view.unmount()
+        stopLifetime()
+        authority.cancelClientPageInitialization('page-a', RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT)
+        route.resolve({ status: 'workspace-gone' })
+        host.release()
+      }
     }
   )
 

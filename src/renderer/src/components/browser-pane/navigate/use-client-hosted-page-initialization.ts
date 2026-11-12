@@ -1,5 +1,5 @@
-import { useCallback, type RefObject } from 'react'
-import { translate } from '@/i18n/i18n'
+import { useCallback, useLayoutEffect, type RefObject } from 'react'
+import { isBlankBrowserUrl } from '@/lib/browser/palette/browser-palette-search'
 import { useAppStore } from '@/store'
 import type { BrowserPageInitializationAction } from '../../../../../shared/browser/client-hosting/browser-page-initialization-action'
 import type { BrowserGuestMetadata } from '../../../../../shared/browser/guest-lifecycle/browser-guest-metadata'
@@ -20,8 +20,17 @@ export function useClientHostedPageInitialization(
     worktreeId,
     onUpdatePageState
   } = props
-  const ownedInitialization = browserTab.initializationState !== undefined
-  const ownedPending = browserTab.initializationState === 'pending'
+  const presentation = useAppStore(
+    (state) => state.remoteBrowserPageHandlesByPageId[browserTab.id]?.initializationPresentation
+  )
+  const ownedInitialization =
+    presentation?.disposition === 'pending' || presentation?.disposition === 'stopped'
+  const ownedPending = presentation?.disposition === 'pending'
+  useLayoutEffect(() => {
+    if (ownedInitialization) {
+      loadFailureRef.current = null
+    }
+  }, [ownedInitialization, loadFailureRef])
   const restoredPageUnrecovered = useRestoredClientHostedRecoveryWindow({
     ownedInitialization,
     browserPageId: browserTab.id,
@@ -45,25 +54,12 @@ export function useClientHostedPageInitialization(
         worktreeId,
         environmentId: runtimeEnvironmentId,
         placement: expected,
-        action,
-        onFailure: () =>
-          onUpdatePageState(browserTab.id, {
-            loading: false,
-            loadError: {
-              code: 0,
-              description: translate(
-                'browser.guestRecovery.failed',
-                'The browser page stopped unexpectedly. Retry to restore it.'
-              ),
-              validatedUrl: browserTab.url
-            }
-          })
+        action
       })
     },
     [
       loadFailureRef,
       browserTab.id,
-      browserTab.url,
       onUpdatePageState,
       placement,
       runtimeEnvironmentId,
@@ -72,13 +68,24 @@ export function useClientHostedPageInitialization(
     ]
   )
   const initializationAction = ownedInitialization ? actOnInitialization : undefined
-  const unavailable = !ownedInitialization && (Boolean(attachmentError) || restoredPageUnrecovered)
-  const showFailureOverlay = !unavailable && Boolean(browserTab.loadError)
+  const unavailable =
+    presentation?.disposition === 'unavailable' ||
+    (!ownedInitialization && (Boolean(attachmentError) || restoredPageUnrecovered))
+  const showFailureOverlay = !presentation && !unavailable && Boolean(browserTab.loadError)
 
   // Unrecovered pages have no pending load that could ever clear a loading indicator.
-  const loading = ownedInitialization
+  const loading = presentation
     ? ownedPending
     : !restoredPageUnrecovered && (placement === null || browserTab.loading)
 
-  return { initializationAction, ownedInitialization, unavailable, showFailureOverlay, loading }
+  return {
+    initializationAction,
+    ownedInitialization,
+    showNewTab: !presentation && isBlankBrowserUrl(browserTab.url),
+    reloadPage: presentation ? { ...browserTab, loading, loadError: null } : browserTab,
+    suppressAttachment: Boolean(presentation),
+    unavailable,
+    showFailureOverlay,
+    loading
+  }
 }

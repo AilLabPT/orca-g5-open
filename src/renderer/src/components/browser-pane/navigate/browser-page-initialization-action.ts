@@ -1,3 +1,9 @@
+import {
+  captureBrowserInitializationDelivery,
+  isBrowserInitializationDeliveryCurrent,
+  recordBrowserInitializationReceipt
+} from '@/runtime/web-session-tabs-sync/browser-initialization-presentation'
+import { sameRuntimeBrowserPlacement } from '../../../../../shared/runtime-browser-placement'
 import { useAppStore } from '@/store'
 import type { BrowserPageInitializationAction } from '../../../../../shared/browser/client-hosting/browser-page-initialization-action'
 import type { RuntimeBrowserClientPlacement } from '../../../../../shared/runtime-browser-placement'
@@ -27,9 +33,11 @@ export async function routeBrowserPageInitializationAction(input: {
   environmentId: string
   placement: RuntimeBrowserClientPlacement
   action: BrowserPageInitializationAction
-  onFailure(): void
 }): Promise<void> {
   const { pageId, environmentId } = input
+  const delivery = captureBrowserInitializationDelivery(environmentId)
+  const presentation =
+    useAppStore.getState().remoteBrowserPageHandlesByPageId[pageId]?.initializationPresentation
   const token = beginBrowserPageInitializationAction(pageId)
   const revision = getRuntimeEnvironmentRevision(environmentId)
   const connection = getRuntimeEnvironmentConnectionGeneration(environmentId)
@@ -39,10 +47,13 @@ export async function routeBrowserPageInitializationAction(input: {
     const state = useAppStore.getState()
     const handle = state.remoteBrowserPageHandlesByPageId[pageId]
     return (
+      isBrowserInitializationDeliveryCurrent(delivery) &&
+      handle?.initializationPresentation?.delivery === presentation?.delivery &&
       getRuntimeEnvironmentRevision(environmentId) === revision &&
       getRuntimeEnvironmentConnectionGeneration(environmentId) === connection &&
       handle?.environmentId === environmentId &&
       handle.remotePageId === remotePageId &&
+      Boolean(handle.placement && sameRuntimeBrowserPlacement(handle.placement, input.placement)) &&
       Boolean(state.browserPagesByWorkspace[input.workspaceId]?.some((page) => page.id === pageId))
     )
   }
@@ -70,6 +81,7 @@ export async function routeBrowserPageInitializationAction(input: {
     const snapshot = unwrapRuntimeRpcResult(
       response as RuntimeRpcResponse<RuntimeMobileSessionTabsResult>
     )
+    recordBrowserInitializationReceipt(environmentId, snapshot, receivedFrame, delivery)
     applied = await applyWebRuntimeSessionTabsAnswer(
       environmentId,
       input.worktreeId,
@@ -88,9 +100,7 @@ export async function routeBrowserPageInitializationAction(input: {
       }
     )
   } catch {
-    if (current()) {
-      input.onFailure()
-    }
+    // A control rejection is not a guest document error; the current snapshot owns its outcome.
   } finally {
     released = endBrowserPageInitializationAction(pageId, token) || released
     if (!applied && released && live() && !hasBrowserPageInitializationAction(pageId)) {

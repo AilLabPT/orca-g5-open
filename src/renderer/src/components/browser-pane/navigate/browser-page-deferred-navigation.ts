@@ -47,7 +47,7 @@ export function hasBrowserPageInitializationAction(pageId: string, token?: symbo
   return Boolean(entry && 'token' in entry && (token === undefined || entry.token === token))
 }
 
-export function endBrowserPageInitializationAction(pageId: string, token: symbol): boolean {
+export function endBrowserPageInitializationAction(pageId: string, token?: symbol): boolean {
   if (!hasBrowserPageInitializationAction(pageId, token)) {
     return false
   }

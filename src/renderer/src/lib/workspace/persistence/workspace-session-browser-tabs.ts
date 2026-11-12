@@ -45,10 +45,9 @@ export function buildPersistedBrowserPagesByWorkspace(
     Object.entries(browserPagesByWorkspace).map(([workspaceId, pages]) => [
       workspaceId,
       pages.map((page) => {
-        const { initializationState: _initializationState, ...savedPage } = page
         const annotations = browserAnnotationsByPageId[page.id]
         return {
-          ...savedPage,
+          ...page,
           loading: false,
           ...persistedRemoteBrowserPageIdentity(remoteBrowserPageHandlesByPageId[page.id]),
           ...(annotations?.length ? { annotations } : {})

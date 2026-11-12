@@ -55,7 +55,6 @@ export function browserPageEqual(a: BrowserPage, b: BrowserPage): boolean {
     a.url === b.url &&
     a.title === b.title &&
     a.loading === b.loading &&
-    a.initializationState === b.initializationState &&
     a.faviconUrl === b.faviconUrl &&
     a.canGoBack === b.canGoBack &&
     a.canGoForward === b.canGoForward &&

@@ -1,3 +1,4 @@
+import { recordBrowserInitializationReceipt } from '../browser-initialization-presentation'
 import type { RuntimeRpcResponse } from '../../../../../shared/runtime-rpc-envelope'
 import type { RuntimeMobileSessionTabsResult } from '../../../../../shared/runtime-session-contracts'
 import { getRuntimeEnvironmentConnectionGeneration } from '@/store/slices/runtime-status/runtime-status-connection-generation'
@@ -76,6 +77,7 @@ export async function applyWebRuntimeSessionTabsAnswer(
   answer: { snapshot: RuntimeMobileSessionTabsResult; receivedFrame: number; runtimeId?: string },
   options: SnapshotRefreshOptions & { beforeApply?(): void; isCurrent?(): boolean } = {}
 ): Promise<boolean> {
+  recordBrowserInitializationReceipt(environmentId, answer.snapshot, answer.receivedFrame)
   return reconcileWebRuntimeSessionTabs(environmentId, worktreeId, { ...options, answer })
 }
 

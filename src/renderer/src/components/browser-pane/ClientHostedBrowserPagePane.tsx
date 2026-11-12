@@ -76,8 +76,7 @@ export function ClientHostedBrowserPagePane(props: Props) {
   const browserHostClientId = placement?.browserHostClientId ?? null
   const browserHostGeneration = placement?.browserHostGeneration ?? null
   const pageHostGeneration = placement?.pageHostGeneration ?? null
-  const { initializationAction, ownedInitialization, unavailable, showFailureOverlay, loading } =
-    useClientHostedPageInitialization(props, attachmentError, loadFailureRef)
+  const initialization = useClientHostedPageInitialization(props, attachmentError, loadFailureRef)
   const retryGuestRecoveryRef = useRef<() => void>(() => {})
   useLayoutEffect(() => {
     onUpdatePageStateRef.current = onUpdatePageState
@@ -105,8 +104,8 @@ export function ClientHostedBrowserPagePane(props: Props) {
     })
   const zoom = useBrowserPageZoomFeedback()
   const reload = useBrowserPageReloadActions({
-    browserTab,
-    onInitializationAction: initializationAction,
+    browserTab: initialization.reloadPage,
+    onInitializationAction: initialization.initializationAction,
     webviewRef,
     retryGuestRecoveryRef,
     onUpdatePageStateRef
@@ -127,7 +126,7 @@ export function ClientHostedBrowserPagePane(props: Props) {
   const navigateToUrl = useClientHostedPageUrlSubmission({
     browserTabId: browserTab.id,
     worktreeId,
-    onInitializationAction: initializationAction,
+    onInitializationAction: initialization.initializationAction,
     webviewRef,
     activeLoadFailureRef: loadFailureRef,
     onUpdatePageState,
@@ -148,7 +147,7 @@ export function ClientHostedBrowserPagePane(props: Props) {
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current
-    if (ownedInitialization) {
+    if (initialization.suppressAttachment) {
       setAttachmentError(null)
       return
     }
@@ -297,7 +296,7 @@ export function ClientHostedBrowserPagePane(props: Props) {
     return cleanupGuest
   }, [
     browserTab.id,
-    ownedInitialization,
+    initialization.suppressAttachment,
     browserHostClientId,
     browserHostGeneration,
     pageHostGeneration,
@@ -311,8 +310,8 @@ export function ClientHostedBrowserPagePane(props: Props) {
     runtimeEnvironmentId,
     placement,
     isActive,
-    unavailable,
-    showFailureOverlay
+    unavailable: initialization.unavailable,
+    showFailureOverlay: initialization.showFailureOverlay
   })
 
   return (
@@ -358,7 +357,7 @@ export function ClientHostedBrowserPagePane(props: Props) {
                   presentation="client-hosted"
                 />
               }
-              loading={loading}
+              loading={initialization.loading}
               loadFailed={browserTab.loadError !== null}
             />
           }
@@ -384,21 +383,21 @@ export function ClientHostedBrowserPagePane(props: Props) {
             guestGeneration={pageHostGeneration}
           />
           <BrowserLinkStatusBubble browserPageId={browserTab.id} />
-          {showFailureOverlay ? (
+          {initialization.showFailureOverlay ? (
             <ClientHostedBrowserLoadFailure
               browserTab={browserTab}
               isActive={isActive}
               onRetry={() => reload.runReloadTrigger('reload')}
             />
           ) : null}
-          {unavailable ? (
+          {initialization.unavailable ? (
             <ClientHostedBrowserUnavailableNotice
               runtimeEnvironmentId={runtimeEnvironmentId}
               worktreeId={worktreeId}
               reopenUrl={browserTab.url}
               placementHostClientId={browserHostClientId}
             />
-          ) : !ownedInitialization && isBlankBrowserUrl(browserTab.url) ? (
+          ) : initialization.showNewTab ? (
             <BrowserNewTabPage worktreeId={worktreeId} onOpenUrl={navigateToUrl} serversElsewhere />
           ) : null}
         </div>

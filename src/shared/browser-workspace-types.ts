@@ -87,8 +87,6 @@ export type BrowserPage = {
   /** Blank for a page whose `docLocation` is set; a live grant URL is never written here. */
   url: string
   title: string
-  /** Current runtime initialization disposition; never saved or echoed by a renderer. */
-  initializationState?: 'pending' | 'stopped'
   loading: boolean
   faviconUrl: string | null
   canGoBack: boolean
