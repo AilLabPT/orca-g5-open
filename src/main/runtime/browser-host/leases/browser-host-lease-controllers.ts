@@ -3,7 +3,7 @@ import { BrowserHostPageInitializations } from '../client-pages/browser-host-pag
 import { BrowserHostPageReconciliationOrchestrator } from '../reconciliation/browser-host-page-reconciliation-orchestration'
 import { BrowserHostLeaseReconnectController } from './browser-host-lease-reconnect'
 import type { BrowserHostLeaseRegistry } from './browser-host-lease-registry'
-import type { BrowserHostLeaseState } from './browser-host-lease-records'
+import type { BrowserHostLeaseIdentity, BrowserHostLeaseState } from './browser-host-lease-records'
 import type { BrowserHostPagePlacementRegistry } from '../reconciliation/browser-host-page-placement'
 import type { BrowserClientPageExecutionHostGrant } from '../client-pages/browser-host-client-page-creation'
 import type { BrowserHostFenceReason } from './browser-host-lease-fence'
@@ -51,6 +51,22 @@ export function createBrowserHostLeaseControllers(
     initializations,
     reconciliations,
     reconnects,
+    sealInitializations: (
+      identity: BrowserHostLeaseIdentity & { connectionId?: string },
+      blocked: boolean
+    ) => {
+      const state = dependencies.leases.get(identity.browserHostClientId)
+      if (
+        !state ||
+        state.status !== 'active' ||
+        state.lease.authorityEpoch !== identity.authorityEpoch ||
+        state.lease.browserHostGeneration !== identity.browserHostGeneration ||
+        state.lease.pairedDeviceId !== identity.pairedDeviceId
+      ) {
+        return
+      }
+      initializations.sealAttach(state, blocked, identity.connectionId)
+    },
     observeInventory:
       (complete: () => void) =>
       (

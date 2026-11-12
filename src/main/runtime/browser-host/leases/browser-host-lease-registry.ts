@@ -108,11 +108,7 @@ export class BrowserHostLeaseRegistry {
     identity: BrowserHostLeaseIdentity & { connectionId?: string },
     blocked: boolean
   ): void {
-    this.controllers.initializations.sealAttach(
-      this.requireLeaseState(identity),
-      blocked,
-      identity.connectionId
-    )
+    this.controllers.sealInitializations(identity, blocked)
   }
 
   select(browserHostClientId?: string, capabilities: readonly string[] = []): BrowserHostLease {
