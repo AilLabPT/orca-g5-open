@@ -209,6 +209,7 @@ it('legacy late cleanup cannot retire a newer native and logical page with the s
       browserHostGeneration: 9,
       browserPageId: 'slow',
       pageHostGeneration: 999,
+      pageCommandProtocolVersion: 1 as const,
       commandId: 'newer-create',
       commandSequence: 1,
       command: {
