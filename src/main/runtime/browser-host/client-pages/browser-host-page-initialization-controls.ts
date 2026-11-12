@@ -1,13 +1,11 @@
 import { BrowserHostPagePartitionPreparation } from './browser-host-page-partition-preparation'
 import { BrowserHostInitializationCompletion } from './browser-host-page-initialization-completion'
-import type {
-  InitializationAdmission,
-  BrowserHostPageInitializationInput
-} from './browser-host-page-initialization-records'
 import type { RuntimeBrowserClientPlacement } from '../../../../shared/runtime-browser-placement'
 import type { BrowserHostLeaseState } from '../leases/browser-host-lease-records'
 import {
   sameInitializationPlacement,
+  type InitializationAdmission,
+  type BrowserHostPageInitializationInput,
   type Initialization,
   type InitializationRecord
 } from './browser-host-page-initialization-records'

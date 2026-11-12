@@ -75,6 +75,7 @@ it.each([
   'expires %i ordinary requests before reservation while exact predecessor cleanup is unknown=%s',
   async (count, unknown) => {
     const h = createRecoveryLoop(['slow'])
+    const replaced = vi.spyOn(h.pages, 'replaceClientPagePlacement')
     let release = () => {}
     const calls: Promise<void>[] = []
     try {
@@ -147,6 +148,10 @@ it.each([
         })
       }
       await h.published('slow')
+      expect(
+        h.commands.filter((c) => c.browserPageId === 'slow' && c.command.type === 'createPage')
+      ).toHaveLength(1)
+      expect(replaced.mock.calls.filter(([id]) => id === 'slow')).toHaveLength(1)
       await Promise.all(calls)
       expect(h.commands.some((c) => c.browserPageId.startsWith('abandoned-'))).toBe(false)
       expect(
@@ -244,6 +249,76 @@ it('lets an ordinary page progress beside four genuinely held recovery documents
     ).toEqual(['a', 'b', 'c', 'd', 'ordinary'])
     expect(h.pages.listPages().every((p) => p.placement.pageHostGeneration === 0)).toBe(true)
   } finally {
+    await h.close()
+  }
+})
+
+it('keeps a failed exact retirement charged and parks recovery until another legitimate attach', async () => {
+  const h = createRecoveryLoop(['slow'])
+  try {
+    await h.seedNative(['slow'], 'profile-a', true)
+    h.native.renderer.retirePage.mockRejectedValue(new Error('renderer-retirement-unavailable'))
+    h.attach()
+    await vi.waitFor(() =>
+      expect(h.results.filter((r) => r.id === 'slow' && r.type === 'closePage')).toEqual([
+        { id: 'slow', type: 'closePage', status: 'failed' }
+      ])
+    )
+    expect(h.executor.snapshotPageInventory()).toMatchObject([
+      { browserPageId: 'slow', state: 'outcomeUnknown' }
+    ])
+    for (let i = 0; i < 254; i += 1) {
+      h.authority.placeServerPage(`occupied-${i}`)
+    }
+    const independent = await h.authority.createClientPage({
+      browserPageId: 'independent',
+      browserHostClientId: 'client-a',
+      pairedDeviceId: 'device-a',
+      browserProfileId: 'profile-b',
+      executionHostKey: 'execution-host-a',
+      workspaceId: WORKSPACE
+    })
+    expect(independent.pageHostGeneration).toBeGreaterThan(0)
+    expect(() => h.authority.placeServerPage('overflow')).toThrow()
+    await expect(
+      h.authority.createClientPage({
+        browserPageId: 'waiting',
+        browserHostClientId: 'client-a',
+        pairedDeviceId: 'device-a',
+        browserProfileId: 'profile-a',
+        executionHostKey: 'waiting-key',
+        workspaceId: WORKSPACE,
+        timeoutMs: 10
+      })
+    ).rejects.toThrow('browser_host_page_creation_timeout')
+    expect(h.results.filter((r) => r.id === 'slow' && r.type === 'closePage')).toHaveLength(1)
+    h.attach()
+    await vi.waitFor(() => expect(h.native.renderer.retirePage).toHaveBeenCalledTimes(2))
+    expect(
+      h.results
+        .filter((r) => r.id === 'slow' && r.type === 'closePage')
+        .every((r) => r.status === 'failed')
+    ).toBe(true)
+    expect(
+      new Set(
+        h.commands
+          .filter((c) => c.browserPageId === 'slow' && c.command.type === 'closePage')
+          .map((c) => c.commandId)
+      ).size
+    ).toBe(2)
+    expect(
+      h.commands.filter((c) => c.browserPageId === 'slow' && c.command.type === 'createPage')
+    ).toEqual([])
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    expect(h.executor.snapshotPageInventory()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ browserPageId: 'slow', state: 'outcomeUnknown' }),
+        expect.objectContaining({ browserPageId: 'independent', state: 'active' })
+      ])
+    )
+    expect(() => h.authority.placeServerPage('still-overflow')).toThrow()
+  } finally {
+    h.native.renderer.retirePage.mockResolvedValue(undefined)
     await h.close()
   }
 })

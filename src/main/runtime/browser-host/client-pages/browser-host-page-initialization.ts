@@ -1,10 +1,10 @@
 import { BrowserHostPageInitializationControls } from './browser-host-page-initialization-controls'
 import {
   initializationQueue,
+  scheduleInitializationQueue,
   waitForInitializationPartition
 } from './browser-host-page-initialization-queue'
 import { settleInitialization } from './browser-host-page-initialization-settlement'
-import { scheduleInitializationQueue } from './browser-host-page-initialization-queue'
 import {
   admitInitialization,
   retireUnpublishedInitialization,
@@ -17,16 +17,16 @@ import type {
   BrowserHostLeaseIdentity,
   BrowserHostLeaseState
 } from '../leases/browser-host-lease-records'
-import type {
-  InitializationAdmission,
-  Initialization,
-  InitializationRecord,
-  InitializationQueue,
-  InitializationDisposition,
-  InitializationOutcome,
-  BrowserHostPageInitializationInput
+import {
+  canContinueInitialization,
+  type InitializationAdmission,
+  type Initialization,
+  type InitializationRecord,
+  type InitializationQueue,
+  type InitializationDisposition,
+  type InitializationOutcome,
+  type BrowserHostPageInitializationInput
 } from './browser-host-page-initialization-records'
-import { canContinueInitialization } from './browser-host-page-initialization-records'
 import { closeInitializationGuest } from './browser-host-page-initialization-commands'
 import { observeInitializationAttach } from './browser-host-page-initialization-attachment'
 import {

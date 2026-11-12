@@ -1,6 +1,9 @@
 import type { BrowserHostPageInitializations } from './browser-host-page-initialization'
 import { createBrowserHostClientPageRequest } from './browser-host-client-page-request'
-import type { BrowserClientPagePlacementReservation } from '../reconciliation/browser-host-page-placement'
+import type {
+  BrowserClientPagePlacementReservation,
+  BrowserHostPagePlacementRegistry
+} from '../reconciliation/browser-host-page-placement'
 import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import { BROWSER_HOST_WEBVIEW_CAPABILITY } from '../leases/browser-host-capability-selection'
 import { browserHostClientProfileFor } from '../profiles/browser-host-client-profile-metadata'
@@ -11,7 +14,6 @@ import {
 } from '../../../../shared/browser/client-hosting/browser-client-page-creation-timeouts'
 import { assertBrowserHostPageCommandAdmission } from '../commands/browser-host-page-command-admission'
 import type { BrowserHostLease, BrowserHostLeaseState } from '../leases/browser-host-lease-records'
-import type { BrowserHostPagePlacementRegistry } from '../reconciliation/browser-host-page-placement'
 import type { RuntimeBrowserClientPlacement } from '../../../../shared/runtime-browser-placement'
 
 export type BrowserClientPageExecutionHostGrant = {
