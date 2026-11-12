@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest'
-import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
+import { createReconciliationDeliveryRuntime } from './client-page-reconciliation-delivery-test-harness'
 import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-session-contracts'
 
 vi.mock('../../../../shared/sidebar-inputs-switch', () => ({ ORCA_SIDEBAR_INPUTS_IS_MAIN: true }))
@@ -7,7 +7,7 @@ vi.mock('../../../../shared/sidebar-inputs-switch', () => ({ ORCA_SIDEBAR_INPUTS
 it.each([750, 7500])(
   'only clears previously held frames in a %i-workspace runtime',
   async (count) => {
-    const h = createRecoveryLoop([])
+    const h = createReconciliationDeliveryRuntime()
     const runtime = h.hostRuntime
     const snapshots = Array.from({ length: count }, (_, index) => ({
       worktree: `repo-1::/tmp/worktree-${index}`,
@@ -78,7 +78,7 @@ it.each([750, 7500])(
 )
 
 it('does not owe delivery for speculative projections and forgets removed workspaces', async () => {
-  const h = createRecoveryLoop([])
+  const h = createReconciliationDeliveryRuntime()
   const runtime = h.hostRuntime
   const worktree = 'repo-1::/tmp/worktree-observed'
   const frames: RuntimeMobileSessionTabsResult[] = []
@@ -127,7 +127,7 @@ it('does not owe delivery for speculative projections and forgets removed worksp
 })
 
 it('keeps each subscription last held frame independently of later read replies', async () => {
-  const h = createRecoveryLoop([])
+  const h = createReconciliationDeliveryRuntime()
   const runtime = h.hostRuntime
   const worktree = 'repo-1::/tmp/worktree-observed'
   const frames: RuntimeMobileSessionTabsResult[] = []

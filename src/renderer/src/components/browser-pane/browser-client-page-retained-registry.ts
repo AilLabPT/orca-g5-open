@@ -12,6 +12,7 @@ import {
   readBrowserClientPageAttachedGuestId
 } from './browser-client-page-retained-elements'
 import { browserClientPageRetainedKey } from './browser-client-page-retained-key'
+import { retireBrowserGuestMetadata } from './host-guest/browser-guest-metadata-cache'
 import {
   retainBrowserClientPagePaint,
   createBrowserClientPageLoadCommitHandler
@@ -221,7 +222,8 @@ export class BrowserClientPageRetainedRegistry {
       (this.partitionCounts.get(identity.partition) ?? 0) + 1
     )
     host.appendChild(webview)
-    this.ensureRoot().appendChild(host)
+    this.root ??= createBrowserClientPageRetainedRoot(this.options.document)
+    this.root.appendChild(host)
     return page
   }
 
@@ -293,6 +295,7 @@ export class BrowserClientPageRetainedRegistry {
     if (this.pages.get(page.key) !== page) {
       return
     }
+    retireBrowserGuestMetadata(page.webview, page.webContentsId)
     releaseBrowserClientRetainedRendererPage(page)
     this.pages.delete(page.key)
     const nextCount = (this.partitionCounts.get(page.identity.partition) ?? 1) - 1
@@ -303,12 +306,8 @@ export class BrowserClientPageRetainedRegistry {
     }
   }
 
-  private ensureRoot(): HTMLDivElement {
-    this.root ??= createBrowserClientPageRetainedRoot(this.options.document)
-    return this.root
-  }
-
   private disconnectPage(page: RetainedPage): void {
+    retireBrowserGuestMetadata(page.webview, page.webContentsId)
     // Registry disposal or guest loss may precede pane detach; stop rect reads for the disconnected host now.
     page.visibleAttachment?.stopTrackingViewport()
     page.visibleAttachment = null
