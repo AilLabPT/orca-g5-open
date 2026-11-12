@@ -12,6 +12,7 @@ import { sameInitializationPlacement } from './browser-host-page-initialization-
 
 export type InitializationAdmissionOwner = {
   records: Map<string, InitializationRecord>
+  join(state: BrowserHostLeaseState, record: InitializationRecord): void
   placements: BrowserHostPagePlacementRegistry
   requireState(state: BrowserHostLeaseState): void
   observer(
@@ -40,6 +41,9 @@ export function admitInitialization(
   let record = owner.records.get(input.browserPageId)
   if (record && record.pairedDeviceId !== state.lease.pairedDeviceId) {
     return 'stale'
+  }
+  if (record) {
+    owner.join(state, record)
   }
   if (record?.closed) {
     record.observer = owner.observer(state, input)
@@ -81,10 +85,13 @@ export function admitInitialization(
       browserHostClientId: state.lease.browserHostClientId,
       closed: false,
       authorityRetired: false,
+      scope: state,
       target: input.previous
     }
     owner.records.set(input.browserPageId, record)
   }
+  record.releaseCleanup ??= owner.placements.claimClientPageCleanup(input.browserPageId)
+  owner.join(state, record)
   const owned = record
   const abort = (): void => {
     if (owned.successor === admission) {
@@ -103,6 +110,7 @@ export function admitInitialization(
   } catch (error) {
     owner.releaseAdmission(admission)
     if (!operation) {
+      record.releaseCleanup?.()
       owner.records.delete(input.browserPageId)
     }
     throw error
@@ -112,7 +120,7 @@ export function admitInitialization(
     owner.resume(state)
     return 'successor-pending'
   }
-  if (record.browserHostClientId !== state.lease.browserHostClientId && record.authorityRetired) {
+  if (record.authorityRetired) {
     record.target = undefined
   }
   record.browserHostClientId = state.lease.browserHostClientId
@@ -137,6 +145,7 @@ export function retireUnpublishedInitialization(
     browserHostClientId: state.lease.browserHostClientId,
     closed: true,
     authorityRetired: false,
+    scope: state,
     target: {
       ...placement,
       authorityRuntimeId: state.lease.authorityRuntimeId,
@@ -146,11 +155,11 @@ export function retireUnpublishedInitialization(
   if (owner.records.has(input.browserPageId)) {
     throw new Error('browser_page_reconciliation_reservation_pending')
   }
-  owner.records.set(input.browserPageId, record)
   if (state.commandLedger?.isClosed()) {
-    record.authorityRetired = true
-    record.observer = undefined
     return
   }
+  record.releaseCleanup = owner.placements.claimClientPageCleanup(input.browserPageId)
+  owner.records.set(input.browserPageId, record)
+  owner.join(state, record)
   owner.startClosedCleanup(record, state)
 }

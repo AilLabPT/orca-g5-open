@@ -3,25 +3,44 @@ import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
 import { retireRuntimeBrowserClientPage } from './browser-client-page-close'
 
 it('a close deadline leaves native capacity charged until the real retirement joins', async () => {
-  const h = createRecoveryLoop(['a', 'b', 'c', 'd', 'queued'])
+  const h = createRecoveryLoop(['fast', 'a', 'b', 'c', 'd', 'queued'])
   try {
     const started = ['a', 'b', 'c', 'd'].map((id) => h.hold(id))
     const attached = h.attach()
     await Promise.all(started)
+    await h.published('fast')
+    const fast = h.pages.getPage('fast')!
+    const action = h.authority.issueClientPageCommand(
+      {
+        authorityRuntimeId: h.authority.authorityRuntimeId,
+        authorityEpoch: h.authority.authorityEpoch,
+        browserPageId: 'fast',
+        ...fast.placement
+      },
+      { type: 'navigate', url: 'https://example.internal/user-action' }
+    )
+    expect((await action.result).status).toBe('completed')
     const retirement = h.holdRetirement('a')
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
     await retireRuntimeBrowserClientPage(
       {
         getBrowserHostLeaseRegistry: () => h.authority,
+        notifyHeadlessBrowserSessionTabsChanged: (id) =>
+          h.hostRuntime.notifyMobileSessionTabsChanged(id),
         getRuntimeBrowserPageRegistry: () => h.pages,
         resolveBrowserWorkspace: async () => ({ id: 'workspace' })
       },
       h.pages.getPage('a')!
     )
     await retirement.started
-    await vi.advanceTimersByTimeAsync(15_000)
+    await vi.advanceTimersByTimeAsync(45_001)
     expect(h.pages.getPage('a')).toBeUndefined()
     expect(h.commands.some((event) => event.browserPageId === 'queued')).toBe(false)
+    expect(
+      h.hostRuntime
+        .snapshotForClient('repo-1::/tmp/worktree-a', 'device-a')
+        .tabs.find((tab) => tab.id === 'queued')
+    ).toMatchObject({ type: 'browser', url: 'https://example.internal/queued' })
     expect(h.executor.snapshotPageInventory().some((page) => page.browserPageId === 'a')).toBe(true)
     retirement.release()
     await h.published('queued')
@@ -41,57 +60,79 @@ it('a close deadline leaves native capacity charged until the real retirement jo
   }
 })
 
-it('an empty same-ledger inventory cannot forget a create waiting to reach its handler', async () => {
-  const h = createRecoveryLoop(['slow'])
-  const firstDelivery = Promise.withResolvers<void>()
-  let held = false
-  h.hooks.delivery = (event, dispatch) => {
-    if (event.command.type === 'createPage' && !held) {
-      held = true
-      firstDelivery.resolve()
-      return
+it.each([false, true])(
+  'same-ledger inventory keeps an outstanding create with fast sibling=%s',
+  async (withFast) => {
+    const h = createRecoveryLoop(['slow'])
+    const firstDelivery = Promise.withResolvers<void>()
+    let held = false
+    h.hooks.delivery = (event, dispatch) => {
+      if (event.command.type === 'createPage' && !held) {
+        held = true
+        firstDelivery.resolve()
+        return
+      }
+      dispatch()
     }
-    dispatch()
+    try {
+      await h.seedNative(['slow'])
+      const navigation = h.hold('slow')
+      const mount = h.holdMount('slow')
+      const first = h.attach()
+      await firstDelivery.promise
+      expect(h.executor.snapshotPageInventory()).toEqual([])
+      const retirement = h.holdRetirement('slow')
+      if (withFast) {
+        await h.seedNative(['fast'])
+      }
+      const next = h.attach({ inventory: h.executor.snapshotPageInventory() })
+      await mount.started
+      if (withFast) {
+        await h.published('fast')
+      }
+      expect(
+        h.hostRuntime.snapshotForClient('repo-1::/tmp/worktree-a', 'device-a')
+          .clientHostedPagesUnreconciled
+      ).toBe(true)
+      first.abort()
+      await first.completion
+      mount.release()
+      await retirement.started
+      expect(
+        new Set(
+          h.commands
+            .filter(
+              (event) => event.browserPageId === 'slow' && event.command.type === 'createPage'
+            )
+            .map((event) => event.commandId)
+        ).size
+      ).toBe(1)
+      expect(h.pages.getPage('slow')?.placement.pageHostGeneration).toBe(0)
+      retirement.release()
+      await navigation
+      h.release('slow')
+      await h.published('slow')
+      await vi.waitFor(() =>
+        expect(
+          h.hostRuntime.snapshotForClient('repo-1::/tmp/worktree-a', 'device-a')
+            .clientHostedPagesUnreconciled
+        ).toBeUndefined()
+      )
+      expect(h.executor.snapshotPageInventory()).toHaveLength(withFast ? 2 : 1)
+      expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+      expect(
+        h.results
+          .filter((result) => result.id === 'slow')
+          .map((result) => [result.type, result.status])
+      ).toContainEqual(['closePage', 'completed'])
+      expect(h.errors).toEqual([])
+      next.abort()
+      await next.completion
+    } finally {
+      await h.close()
+    }
   }
-  try {
-    const navigation = h.hold('slow')
-    const mount = h.holdMount('slow')
-    const retirement = h.holdRetirement('slow')
-    const first = h.attach()
-    await firstDelivery.promise
-    expect(h.executor.snapshotPageInventory()).toEqual([])
-    const next = h.attach({ inventory: [] })
-    await mount.started
-    first.abort()
-    await first.completion
-    mount.release()
-    await retirement.started
-    expect(
-      new Set(
-        h.commands
-          .filter((event) => event.command.type === 'createPage')
-          .map((event) => event.commandId)
-      ).size
-    ).toBe(1)
-    expect(h.pages.getPage('slow')?.placement.pageHostGeneration).toBe(0)
-    retirement.release()
-    await navigation
-    h.release('slow')
-    await h.published('slow')
-    expect(h.executor.snapshotPageInventory()).toHaveLength(1)
-    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
-    expect(
-      h.results
-        .filter((result) => result.id === 'slow')
-        .map((result) => [result.type, result.status])
-    ).toContainEqual(['closePage', 'completed'])
-    expect(h.errors).toEqual([])
-    next.abort()
-    await next.completion
-  } finally {
-    await h.close()
-  }
-})
+)
 
 it('an omitted inventory cannot certify a retired native target absent', async () => {
   const h = createRecoveryLoop(['slow'])

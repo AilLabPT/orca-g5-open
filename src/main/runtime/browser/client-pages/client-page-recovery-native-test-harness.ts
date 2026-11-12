@@ -75,8 +75,8 @@ export function createRecoveryNativeLoop(hooks: { failCommit?: boolean }) {
       navigations.set(id, started)
       return started.promise
     },
-    release(id: string) {
-      commits.get(id)?.resolve(`https://example.internal/${id}`)
+    release(id: string, url = `https://example.internal/${id}`) {
+      commits.get(id)?.resolve(url)
       commits.delete(id)
     },
     holdRetirement(id: string) {

@@ -132,8 +132,7 @@ const browserClientHosts =
               BROWSER_CLIENT_FILE_CHANNEL_HOST_CAPABILITY
             ],
             handler,
-            cancelInitialization: (event) => executor?.cancelInitialization(event) ?? false,
-            releaseInitializationReceipt: (event) => executor?.releaseInitializationReceipt(event),
+            acquireInitialization: (event) => executor?.acquireInitialization(event),
             getPageInventory,
             pageReconciliationProtocolVersion: 1,
             fileChannelProtocolVersion: 1,

@@ -19,7 +19,8 @@ export const DEFAULT_JOIN_TIMEOUT_MS = 5_000
 
 export type CommandHandler = (
   command: BrowserClientHostCommandEvent,
-  signal: AbortSignal
+  signal: AbortSignal,
+  closeInitialization?: BrowserClientInitializationOwner['close']
 ) => BrowserClientHostCommandResult | Promise<BrowserClientHostCommandResult>
 
 export type CommandRecord = {
@@ -31,9 +32,17 @@ export type CommandRecord = {
   controller?: AbortController
   handlerPromise?: Promise<void>
   initializationCleanup?: boolean
+  closeInitialization?: BrowserClientInitializationOwner['close']
+}
+
+export type BrowserClientInitializationOwner = {
+  cancel(event: BrowserClientHostCommandEvent): boolean
+  close(signal: AbortSignal): Promise<BrowserClientHostCommandResult>
+  release(): void
 }
 
 export type PageState = {
+  initialization?: BrowserClientInitializationOwner
   browserPageId: string
   generation: number
   nextSequence: number
@@ -52,8 +61,9 @@ export type PageState = {
 export type DispatcherOptions = {
   authority: BrowserClientHostLeaseAuthority
   handler: CommandHandler
-  cancelInitialization?: (event: BrowserClientHostCommandEvent) => boolean
-  releaseInitializationReceipt?: (event: BrowserClientHostCommandEvent) => void
+  acquireInitialization?: (
+    event: BrowserClientHostCommandEvent
+  ) => BrowserClientInitializationOwner | undefined
   maxPages?: number
   maxActiveCommands?: number
   maxConcurrentHandlers?: number

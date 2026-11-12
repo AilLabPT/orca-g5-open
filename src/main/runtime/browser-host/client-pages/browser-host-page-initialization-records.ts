@@ -72,6 +72,8 @@ export type InitializationRecord = {
   browserHostClientId: string
   closed: boolean
   authorityRetired: boolean
+  scope?: BrowserHostLeaseState
+  releaseCleanup?: () => void
   target?: InitializationTarget
   operation?: Initialization
   successor?: InitializationAdmission

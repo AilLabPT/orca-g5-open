@@ -67,6 +67,8 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
   releaseUnrecoverablePage?: (page: RuntimeBrowserClientPage) => void
   /** Skip newly adopted pages: inventory still names predecessor authority and would wrongly trigger their teardown. */
   adoptedPageIds?: ReadonlySet<string>
+  /** Adoption owns these queued/running rows and their current attach observer. */
+  claimedPageIds?: ReadonlySet<string>
   /** Re-resolve routes for persisted pages: keys name their minting runtime process and clients refuse predecessor keys. */
   resolveExecutionHostKey?: (workspaceId: string) => Promise<BrowserExecutionHostKeyResolution>
   signal?: AbortSignal
@@ -86,6 +88,7 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
       (page) =>
         isPlacedAsObservedAtAttach(page, options.pagePlacementsAtAttach) &&
         !options.adoptedPageIds?.has(page.browserPageId) &&
+        !options.claimedPageIds?.has(page.browserPageId) &&
         (isRecoverableByLease(page, options.lease) ||
           options.authority.canContinueClientPageInitialization(
             page.browserPageId,

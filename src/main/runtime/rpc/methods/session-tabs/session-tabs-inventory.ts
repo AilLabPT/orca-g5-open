@@ -1,3 +1,5 @@
+import { projectSessionTabsForClient } from './session-tabs-client-projection'
+export { projectSessionTabsForClient } from './session-tabs-client-projection'
 import {
   collectSessionTabsInventory,
   type SessionTabsInventory
@@ -7,9 +9,6 @@ import '../../../../../shared/protocol-version'
 import { SESSION_TABS_AUTHORITATIVE_INVENTORY_RUNTIME_CAPABILITY } from '../../../../../shared/session-tabs-runtime-capabilities'
 import type { RuntimeMobileSessionTabsResult } from '../../../../../shared/runtime-session-contracts'
 import type { RpcContext } from '../../core'
-import { projectSessionTabAgentStatus } from './session-tab-agent-status-projection'
-import { projectSessionTabBrowserPlacements } from './session-tab-browser-placement-projection'
-import { projectSessionTabFileHosts } from './session-tab-file-host-projection'
 import { createSessionTabsStreamDelta } from './session-tabs-sender-delta'
 import { prepareStructuredTabsIfSupported } from './structured-session-tab-restore'
 import { createSessionTabsTabDeltaEncoder } from '../../../../../shared/session-tabs-tab-delta'
@@ -24,26 +23,6 @@ function clientUnderstandsAuthoritativeInventory(context: RpcContext): boolean {
     context.clientCapabilities?.includes(
       SESSION_TABS_AUTHORITATIVE_INVENTORY_RUNTIME_CAPABILITY
     ) === true
-  )
-}
-
-export function projectSessionTabsForClient(
-  snapshot: RuntimeMobileSessionTabsResult,
-  clientKind: 'mobile' | 'runtime' | undefined,
-  clientCapabilities: Parameters<typeof projectSessionTabAgentStatus>[2]
-): RuntimeMobileSessionTabsResult {
-  // Phones draw no agent message cards, so they never pay for sender identity.
-  const { agentSenderAssociations: _desktopOnly, ...phone } = snapshot
-  return projectSessionTabBrowserPlacements(
-    projectSessionTabFileHosts(
-      projectSessionTabAgentStatus(
-        clientKind === 'mobile' ? phone : snapshot,
-        clientKind,
-        clientCapabilities
-      ),
-      clientKind
-    ),
-    clientCapabilities
   )
 }
 
@@ -62,7 +41,12 @@ function projectInventory(
 }
 
 export async function listSessionTabsInventory(context: RpcContext): Promise<SessionTabsInventory> {
-  return projectInventory((await collectSessionTabsInventory(context)).inventory, context)
+  const result = projectInventory((await collectSessionTabsInventory(context)).inventory, context)
+  if (context.signal?.aborted) {
+    throw new Error('client_disconnected')
+  }
+  context.runtime.observeClientHostedPageSnapshots?.(result.snapshots, context.pairedDeviceId)
+  return result
 }
 
 export async function subscribeSessionTabsInventory(
@@ -75,6 +59,7 @@ export async function subscribeSessionTabsInventory(
   }
   const cleanupPrefix = `session.tabs:${connectionId ?? 'local'}:*`
   const subscriptionId = requestId ? `${cleanupPrefix}:${requestId}` : cleanupPrefix
+  const observation = {}
   const inventoryController = new AbortController()
   // For the stream's whole life, not just the census: a desktop unsubscribe arrives as this abort.
   const onTransportAbort = (): void => runtime.cleanupSubscription(subscriptionId)
@@ -227,6 +212,7 @@ export async function subscribeSessionTabsInventory(
       context.signal?.removeEventListener('abort', onTransportAbort)
       inventoryController.abort()
       unsubscribe()
+      runtime.forgetClientHostedPageObservation?.(pairedDeviceId, observation)
       stopCapabilities?.()
       canonicalSnapshotsByWorktree.clear()
       clearBufferedChanges()
@@ -287,6 +273,7 @@ export async function subscribeSessionTabsInventory(
       tabDelta.full(withProofDelta(projectChange(snapshot)))
     )
   })
+  runtime.observeClientHostedPageSnapshots?.(inventory.snapshots, pairedDeviceId, observation)
   for (const snapshot of inventory.snapshots) {
     const canonical = withoutNavigationIntent(snapshot)
     canonicalSnapshotsByWorktree.set(snapshot.worktree, canonical)

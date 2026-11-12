@@ -46,9 +46,10 @@ export class BrowserClientExecutorPageCreation {
     this.creatingPages.set(event.browserPageId, unknownInventory)
     const initializer = this.initializers.begin(event)
     try {
+      const initializationSignal = initializer?.controller?.signal
       const creation = this.createReservedPage(
         event,
-        initializer ? AbortSignal.any([signal, initializer.controller.signal]) : signal,
+        initializationSignal ? AbortSignal.any([signal, initializationSignal]) : signal,
         initializer
       )
       if (initializer) {
@@ -100,7 +101,7 @@ export class BrowserClientExecutorPageCreation {
           this.dependencies,
           this.pages,
           page,
-          initializer ? () => initializer.controller.abort() : undefined
+          initializer ? () => initializer.controller?.abort() : undefined
         )
       }
     )

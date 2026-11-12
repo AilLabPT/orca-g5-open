@@ -1,3 +1,4 @@
+import { adoptRuntimeBrowserClientPagesFromInventory } from './runtime-browser-client-page-adoption'
 import { expect, it, vi } from 'vitest'
 import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
 import * as persistence from './client-hosted-browser-page-persistence'
@@ -41,11 +42,16 @@ it.each([
       expect(work).toEqual({ passes: 1, rows: count })
       expect(h.profile.work).toEqual({ writes: 1, normalizedWorktrees: worktrees })
       expect(h.profile.session.clientHostedBrowserPagesByWorktree?.[WORKSPACE]).toHaveLength(count)
-      const firstInventory = h.executor.snapshotPageInventory()
-      const duplicate = h.attach({ inventory: firstInventory })
-      await vi.waitFor(() =>
-        expect(h.commands.some((event) => event.command.type === 'navigate')).toBe(true)
-      )
+      await adoptRuntimeBrowserClientPagesFromInventory({
+        lease: h.authority.select('client-a'),
+        authority: h.authority,
+        pages: h.pages,
+        notifyWorkspace: (id) => h.hostRuntime.notifyMobileSessionTabsChanged(id),
+        resolveExecutionHostKey: async () => ({
+          status: 'resolved',
+          executionHostKey: 'execution-host-a'
+        })
+      })
       expect(h.profile.work.writes).toBe(1)
       h.release(ids[0]!)
       await h.published(ids[0]!)
@@ -55,9 +61,8 @@ it.each([
           (row) => row.browserPageId === ids[0]
         )?.url
       ).toBe('https://example.internal/page-0')
-      duplicate.abort()
       attached.abort()
-      await Promise.all([duplicate.completion, attached.completion])
+      await attached.completion
     } finally {
       measure.mockRestore()
       await h.close()
@@ -79,11 +84,16 @@ it('does not resurrect a closed queued import from the next authenticated invent
     await retireRuntimeBrowserClientPage(
       {
         getBrowserHostLeaseRegistry: () => h.authority,
+        notifyHeadlessBrowserSessionTabsChanged: (id) =>
+          h.hostRuntime.notifyMobileSessionTabsChanged(id),
         getRuntimeBrowserPageRegistry: () => h.pages,
         resolveBrowserWorkspace: async () => ({ id: WORKSPACE })
       },
       page
     )
+    expect(h.commands.some((event) => event.browserPageId === 'queued')).toBe(false)
+    h.release('a')
+    await h.published('a')
     await cleanup.started
     const next = h.attach({ inventory })
     first.abort()

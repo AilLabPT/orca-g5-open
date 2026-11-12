@@ -15,6 +15,7 @@ export function admitModernAdoptions(
 ): RuntimeBrowserClientPageAdoptionResult {
   const remaining = new Set(candidates.map((page) => page.browserPageId))
   const published: string[] = []
+  const claimed: string[] = []
   const seededWorkspaces = new Set<string>()
   const ordered = [...candidates].sort((a, b) => a.pageHostGeneration - b.pageHostGeneration)
   const highest = ordered.reduce((value, page) => Math.max(value, page.pageHostGeneration), 0)
@@ -39,7 +40,7 @@ export function admitModernAdoptions(
       metadataRevision: 0
     }
     try {
-      admitRuntimeBrowserPageInitialization({
+      const disposition = admitRuntimeBrowserPageInitialization({
         ...options,
         page,
         previous: inventory,
@@ -69,11 +70,11 @@ export function admitModernAdoptions(
           if (outcome === 'published' || outcome === 'retained-clean' || outcome === 'disposed') {
             remaining.delete(inventory.browserPageId)
           }
-          if (remaining.size === 0) {
-            options.onReconciled?.()
-          }
         }
       })
+      if (disposition !== 'stale') {
+        claimed.push(inventory.browserPageId)
+      }
     } catch (error) {
       console.warn('[browser-host-lease] client page initialization admission failed:', {
         browserPageId: inventory.browserPageId,
@@ -84,5 +85,5 @@ export function admitModernAdoptions(
   for (const workspaceId of seededWorkspaces) {
     options.notifyWorkspace(workspaceId)
   }
-  return { adoptedPageIds: published, unadoptedPageIds: [...remaining] }
+  return { adoptedPageIds: published, unadoptedPageIds: [...remaining], claimedPageIds: claimed }
 }

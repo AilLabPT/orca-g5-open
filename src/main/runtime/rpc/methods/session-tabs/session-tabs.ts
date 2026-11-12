@@ -36,7 +36,7 @@ export const SESSION_TAB_METHODS = [
     params: WorktreeTabSelector,
     handler: async (params, { runtime, pairedDeviceId, clientKind, clientCapabilities }) => {
       await prepareStructuredTabsIfSupported({ runtime, clientKind, clientCapabilities })
-      return projectSessionTabsForClient(
+      const result = projectSessionTabsForClient(
         await runtime.listMobileSessionTabs(params.worktree, pairedDeviceId, {
           includeInitialSurfaceLaunch: true,
           includeAgentSenders: clientKind !== 'mobile'
@@ -44,6 +44,8 @@ export const SESSION_TAB_METHODS = [
         clientKind,
         clientCapabilities
       )
+      runtime.observeClientHostedPageSnapshots?.([result], pairedDeviceId)
+      return result
     }
   }),
   defineMethod({
@@ -129,6 +131,7 @@ export const SESSION_TAB_METHODS = [
       },
       emit
     ) => {
+      const observation = {}
       let subscriptionId: string | null = null
       let released = false
       let endOnRelease = true
@@ -164,6 +167,7 @@ export const SESSION_TAB_METHODS = [
             closePhoneSession?.()
             signal?.removeEventListener('abort', release)
             stopListening()
+            runtime.forgetClientHostedPageObservation?.(pairedDeviceId, observation)
             stopCapabilities()
             if (endOnRelease) {
               emit({ type: 'end' })
@@ -227,6 +231,7 @@ export const SESSION_TAB_METHODS = [
           type: 'snapshot',
           ...tabDelta.full(withProofDelta(project(initial)))
         })
+        runtime.observeClientHostedPageSnapshots?.([initial], pairedDeviceId, observation)
         if (released) {
           return
         }

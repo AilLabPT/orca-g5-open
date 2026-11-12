@@ -1,3 +1,4 @@
+import type { BrowserClientInitializationOwner } from '../../client-hosts/commands/browser-client-host-command-state'
 import { normalizeBrowserNavigationUrl } from '../../../../shared/browser-url'
 import type {
   BrowserClientHostedPageInventory,
@@ -13,8 +14,17 @@ import { assertBrowserClientPageCommandNotAborted } from './browser-client-page-
 import { BrowserClientPageCommandError } from './browser-client-page-command-failure'
 
 export type PageInitialization = {
-  event: BrowserClientHostCommandEvent
-  controller: AbortController
+  identity: Pick<
+    BrowserClientHostCommandEvent,
+    | 'authorityRuntimeId'
+    | 'authorityEpoch'
+    | 'browserHostClientId'
+    | 'browserHostGeneration'
+    | 'pageHostGeneration'
+    | 'browserPageId'
+  >
+  event?: BrowserClientHostCommandEvent
+  controller?: AbortController
   creation?: Promise<void>
   page?: BrowserClientRetainedPage
   failedCleanup?: () => Promise<void>
@@ -40,7 +50,34 @@ export class BrowserClientPageInitializations {
     if (event.command.type !== 'createPage' || event.command.initialUrl === undefined) {
       return undefined
     }
-    const initializer = { event, controller: new AbortController() }
+    const existing = this.operations.get(event.browserPageId)
+    if (
+      existing &&
+      sameBrowserClientPageAuthority(existing.identity, event) &&
+      existing.identity.pageHostGeneration === event.pageHostGeneration
+    ) {
+      return existing
+    }
+    const {
+      authorityRuntimeId,
+      authorityEpoch,
+      browserHostClientId,
+      browserHostGeneration,
+      pageHostGeneration,
+      browserPageId
+    } = event
+    const initializer = {
+      identity: {
+        authorityRuntimeId,
+        authorityEpoch,
+        browserHostClientId,
+        browserHostGeneration,
+        pageHostGeneration,
+        browserPageId
+      },
+      event,
+      controller: new AbortController()
+    }
     this.operations.set(event.browserPageId, initializer)
     return initializer
   }
@@ -50,8 +87,8 @@ export class BrowserClientPageInitializations {
     return Boolean(
       event.command.type === 'closePage' &&
       initializer &&
-      sameBrowserClientPageAuthority(initializer.event, event.command.targetAuthority) &&
-      event.pageHostGeneration === initializer.event.pageHostGeneration
+      sameBrowserClientPageAuthority(initializer.identity, event.command.targetAuthority) &&
+      event.pageHostGeneration === initializer.identity.pageHostGeneration
     )
   }
 
@@ -67,15 +104,27 @@ export class BrowserClientPageInitializations {
     }
   }
 
-  releaseReceipt(event: BrowserClientHostCommandEvent): void {
-    const initializer = this.operations.get(event.browserPageId)
-    if (
-      initializer?.cleaned &&
-      sameBrowserClientPageAuthority(initializer.event, event) &&
-      initializer.event.pageHostGeneration === event.pageHostGeneration &&
-      (event.command.type === 'createPage' || event.command.type === 'navigate')
-    ) {
-      this.operations.delete(event.browserPageId)
+  acquire(event: BrowserClientHostCommandEvent): BrowserClientInitializationOwner | undefined {
+    const initializer = this.begin(event)
+    if (!initializer) {
+      return undefined
+    }
+    const browserPageId = initializer.identity.browserPageId
+    return {
+      cancel: (close) => this.operations.get(browserPageId) === initializer && this.cancel(close),
+      close: async (signal) => {
+        assertBrowserClientPageCommandNotAborted(signal)
+        await this.cleanupInitializer(initializer)
+        if (this.operations.get(browserPageId) === initializer) {
+          this.operations.delete(browserPageId)
+        }
+        return { status: 'completed' }
+      },
+      release: () => {
+        if (this.operations.get(browserPageId) === initializer) {
+          this.operations.delete(browserPageId)
+        }
+      }
     }
   }
 
@@ -84,38 +133,42 @@ export class BrowserClientPageInitializations {
     if (
       event.command.type !== 'closePage' ||
       !initializer ||
-      !sameBrowserClientPageAuthority(initializer.event, event.command.targetAuthority) ||
-      event.pageHostGeneration !== initializer.event.pageHostGeneration
+      !sameBrowserClientPageAuthority(initializer.identity, event.command.targetAuthority) ||
+      event.pageHostGeneration !== initializer.identity.pageHostGeneration
     ) {
       return false
     }
-    initializer.controller.abort()
+    initializer.controller?.abort()
     return true
   }
 
   cancelAll(): void {
     for (const initializer of this.operations.values()) {
-      initializer.controller.abort()
+      initializer.controller?.abort()
     }
   }
 
   async initialize(event: BrowserClientHostCommandEvent, signal: AbortSignal): Promise<string> {
     const initializer = this.operations.get(event.browserPageId)
     const page = this.pages.get(event.browserPageId)
+    const controller = initializer?.controller
+    const bootstrap = initializer?.event
     if (
       event.command.type !== 'navigate' ||
-      initializer?.event.command.type !== 'createPage' ||
+      bootstrap?.command.type !== 'createPage' ||
+      !initializer ||
+      !controller ||
       !page ||
       initializer.page !== page ||
-      !sameBrowserClientPageAuthority(initializer.event, event) ||
-      event.commandSequence !== initializer.event.commandSequence + 1 ||
+      !sameBrowserClientPageAuthority(initializer.identity, event) ||
+      event.commandSequence !== bootstrap.commandSequence + 1 ||
       normalizeBrowserNavigationUrl(event.command.url) !==
-        normalizeBrowserNavigationUrl(initializer.event.command.initialUrl ?? '') ||
+        normalizeBrowserNavigationUrl(bootstrap.command.initialUrl ?? '') ||
       !this.routeWebContents.initializeGuest
     ) {
       throw new BrowserClientPageCommandError('browser_client_page_initialization_stale')
     }
-    const combined = AbortSignal.any([signal, initializer.controller.signal])
+    const combined = AbortSignal.any([signal, controller.signal])
     try {
       const url = await this.routeWebContents.initializeGuest(
         page.lifecycleClaim,
@@ -137,7 +190,7 @@ export class BrowserClientPageInitializations {
       this.operations.delete(event.browserPageId)
       return url
     } catch (error) {
-      initializer.controller.abort()
+      initializer.controller?.abort()
       await this.cleanupInitializer(initializer)
       throw error
     }
@@ -158,12 +211,17 @@ export class BrowserClientPageInitializations {
         page.retiring = null
         throw error
       }
-      if (this.pages.get(initializer.event.browserPageId) === page) {
-        this.pages.delete(initializer.event.browserPageId)
+      if (this.pages.get(initializer.identity.browserPageId) === page) {
+        this.pages.delete(initializer.identity.browserPageId)
       }
     }
-    this.failedPages.delete(initializer.event.browserPageId)
+    const failed = this.failedPages.get(initializer.identity.browserPageId)
+    if (failed && sameBrowserClientPageAuthority(failed, initializer.identity)) {
+      this.failedPages.delete(initializer.identity.browserPageId)
+    }
     initializer.cleaned = true
+    initializer.event = undefined
+    initializer.controller = undefined
     initializer.creation = undefined
     initializer.page = undefined
   }

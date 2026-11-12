@@ -154,8 +154,7 @@ it('a fast imported row and plain recovery publish independently of held adoptio
     })
   )
   const h = rig(['slow-adopted', 'fast-adopted', 'recovery'], inventory)
-  const onReconciled = vi.fn()
-  const adoption = await adoptRuntimeBrowserClientPagesFromInventory({ ...h.options, onReconciled })
+  const adoption = await adoptRuntimeBrowserClientPagesFromInventory(h.options)
   await recoverUnavailableRuntimeBrowserClientPages({
     ...h.options,
     adoptedPageIds: new Set(adoption.adoptedPageIds)
@@ -164,7 +163,6 @@ it('a fast imported row and plain recovery publish independently of held adoptio
   await h.published.get('fast-adopted')!.promise
   await h.published.get('recovery')!.promise
   expect(adoption.unadoptedPageIds).toEqual(['slow-adopted', 'fast-adopted'])
-  expect(onReconciled).not.toHaveBeenCalled()
   expect(h.pages.getPage('slow-adopted')?.url).toBe('https://example.test/slow-adopted')
   h.release('slow-adopted')
   await h.published.get('slow-adopted')!.promise

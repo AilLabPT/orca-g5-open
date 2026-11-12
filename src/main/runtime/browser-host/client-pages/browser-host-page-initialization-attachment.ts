@@ -11,7 +11,8 @@ export function observeInitializationAttach(
   records: Map<string, InitializationRecord>,
   state: BrowserHostLeaseState,
   inventory: readonly BrowserClientHostedPageInventory[] | undefined,
-  cancel: (operation: Initialization) => void
+  cancel: (operation: Initialization) => void,
+  settled: (record: InitializationRecord) => void
 ): void {
   const byPage = inventory && new Map(inventory.map((page) => [page.browserPageId, page]))
   for (const record of records.values()) {
@@ -46,9 +47,10 @@ export function observeInitializationAttach(
       }
     } else {
       record.target = undefined
-      if (record.closed) {
-        records.delete(record.browserPageId)
-      }
+      record.releaseCleanup?.()
+      record.releaseCleanup = undefined
+      settled(record)
+      records.delete(record.browserPageId)
     }
   }
 }

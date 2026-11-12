@@ -1,4 +1,5 @@
 import { OrcaRuntimeService } from '../../orca-runtime'
+import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-session-contracts'
 import { createProfile } from './client-hosted-browser-persistence-test-harness'
 import { RpcDispatcher } from '../../rpc/dispatcher'
 import { BROWSER_CLIENT_HOST_METHODS } from '../../rpc/methods/browser/browser-client-host'
@@ -20,12 +21,13 @@ import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from './client-hosted-browse
 
 export function createRecoveryLoop(
   ids: readonly string[],
-  options: { worktreeCount?: number } = {}
+  loopOptions: { worktreeCount?: number; maxCachedCommandResults?: number } = {}
 ) {
   const cleanups = new Map<string, () => void>()
   const publications = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>()
   const hooks: {
     onResult?: (event: BrowserClientHostCommandEvent) => void
+    beforeResult?: (event: BrowserClientHostCommandEvent) => Promise<void>
     onNotify?: () => void
     failCommit?: boolean
     delivery?: (event: BrowserClientHostCommandEvent, dispatch: () => void) => void
@@ -43,8 +45,28 @@ export function createRecoveryLoop(
   let executor: BrowserClientPageCommandExecutor
   let client: BrowserClientHostCommandDispatcher | undefined
   let authorityGeneration = 0
-  const profile = createProfile(options.worktreeCount)
+  const profile = createProfile(loopOptions.worktreeCount)
   class RecoveryRuntime extends OrcaRuntimeService {
+    projectedFrames = 0
+    protected override projectMobileSessionTabsForClient(
+      result: RuntimeMobileSessionTabsResult,
+      clientId?: string
+    ) {
+      this.projectedFrames += 1
+      return super.projectMobileSessionTabsForClient(result, clientId)
+    }
+    peekSnapshotForClient(worktree: string, clientId: string) {
+      return this.getMobileSessionTabsForWorktree(worktree, clientId, {
+        includeAgentSenders: false
+      })
+    }
+    snapshotForClient(worktree: string, clientId: string) {
+      const result = this.getMobileSessionTabsForWorktree(worktree, clientId, {
+        includeAgentSenders: false
+      })
+      this.observeClientHostedPageSnapshots([result], clientId)
+      return result
+    }
     override getRuntimeId(): string {
       return 'runtime-a'
     }
@@ -148,11 +170,10 @@ export function createRecoveryLoop(
           if (!client || clientGeneration !== event.browserHostGeneration) {
             clientGeneration = event.browserHostGeneration
             client = new BrowserClientHostCommandDispatcher({
+              maxCachedCommandResults: loopOptions.maxCachedCommandResults,
               authority: { ...event, authorityRuntimeId: 'runtime-a', browserHostClientId },
-              handler: (command, signal) => executor.handle(command, signal),
-              cancelInitialization: (command) => executor.cancelInitialization(command),
-              releaseInitializationReceipt: (command) =>
-                executor.releaseInitializationReceipt(command)
+              handler: (command, signal, close) => executor.handle(command, signal, close),
+              acquireInitialization: (command) => executor.acquireInitialization(command)
             })
           }
           return
@@ -165,6 +186,9 @@ export function createRecoveryLoop(
           void client!
             .dispatch(event)
             .then(async (result) => {
+              if (hooks.beforeResult) {
+                await hooks.beforeResult(event)
+              }
               hooks.onResult?.(event)
               results.push({
                 type: event.command.type,

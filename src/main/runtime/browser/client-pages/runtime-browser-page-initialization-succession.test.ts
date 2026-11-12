@@ -61,7 +61,10 @@ it.each(['client-a', 'replacement-client'])(
         h.release('slow')
         current = h.attach({ hostId, inventory: [] })
         await vi.waitFor(() =>
-          expect(h.pages.getPage('slow')?.placement.browserHostClientId).toBe(hostId)
+          expect(h.authority.getPlacement('slow')).toMatchObject({
+            kind: 'client',
+            browserHostClientId: hostId
+          })
         )
         expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
         expect(h.executor.snapshotPageInventory()).toHaveLength(1)
@@ -70,6 +73,8 @@ it.each(['client-a', 'replacement-client'])(
       await retireRuntimeBrowserClientPage(
         {
           getBrowserHostLeaseRegistry: () => h.authority,
+          notifyHeadlessBrowserSessionTabsChanged: (id) =>
+            h.hostRuntime.notifyMobileSessionTabsChanged(id),
           getRuntimeBrowserPageRegistry: () => h.pages,
           resolveBrowserWorkspace: async () => ({ id: 'workspace' })
         },

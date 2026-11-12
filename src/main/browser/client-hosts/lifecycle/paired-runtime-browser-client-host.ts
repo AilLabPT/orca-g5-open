@@ -23,8 +23,7 @@ export type PairedRuntimeBrowserClientHostOptions = {
   browserHostClientId: string
   hostCapabilities: readonly string[]
   handler: CommandHandler
-  cancelInitialization?: DispatcherOptions['cancelInitialization']
-  releaseInitializationReceipt?: DispatcherOptions['releaseInitializationReceipt']
+  acquireInitialization?: DispatcherOptions['acquireInitialization']
   getPageInventory?: () => readonly BrowserClientHostedPageInventory[]
   pageReconciliationProtocolVersion?: 1
   fileChannelProtocolVersion?: 1
@@ -153,8 +152,7 @@ export class PairedRuntimeBrowserClientHost {
     this.dispatcher = new BrowserClientHostCommandDispatcher({
       authority,
       handler: this.options.handler,
-      cancelInitialization: this.options.cancelInitialization,
-      releaseInitializationReceipt: this.options.releaseInitializationReceipt,
+      acquireInitialization: this.options.acquireInitialization,
       ...this.options.dispatcher
     })
   }

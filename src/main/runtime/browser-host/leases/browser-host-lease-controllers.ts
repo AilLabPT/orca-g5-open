@@ -1,3 +1,4 @@
+import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import { BrowserHostPageInitializations } from '../client-pages/browser-host-page-initialization'
 import { BrowserHostPageReconciliationOrchestrator } from '../reconciliation/browser-host-page-reconciliation-orchestration'
 import { BrowserHostLeaseReconnectController } from './browser-host-lease-reconnect'
@@ -46,5 +47,18 @@ export function createBrowserHostLeaseControllers(
     fenceLease: dependencies.fence,
     fenceRoute: (state, reason) => dependencies.tunnels.fence(state, reason)
   })
-  return { initializations, reconciliations, reconnects }
+  return {
+    initializations,
+    reconciliations,
+    reconnects,
+    observeInventory:
+      (complete: () => void) =>
+      (
+        state: BrowserHostLeaseState,
+        inventory: readonly BrowserClientHostedPageInventory[] | undefined
+      ) => {
+        initializations.observeAttach(state, inventory, complete)
+        reconciliations.observeInventory(state)
+      }
+  }
 }

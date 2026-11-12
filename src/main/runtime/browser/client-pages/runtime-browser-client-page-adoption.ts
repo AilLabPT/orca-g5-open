@@ -37,7 +37,6 @@ export type RuntimeBrowserClientPageAdoptionOptions = {
   /** The execution-host key that workspace's pages would be created under now. */
   resolveExecutionHostKey: (workspaceId: string) => Promise<BrowserExecutionHostKeyResolution>
   signal?: AbortSignal
-  onReconciled?: () => void
 }
 
 export type RuntimeBrowserClientPageAdoptionResult = {
@@ -45,6 +44,8 @@ export type RuntimeBrowserClientPageAdoptionResult = {
   adoptedPageIds: readonly string[]
   /** Keep rows for failed/deferred adoption: client guests remain live until reconciliation can finish. */
   unadoptedPageIds: readonly string[]
+  /** Claimed initializations remain unpublished but must not be admitted again by recovery. */
+  claimedPageIds?: readonly string[]
 }
 
 const NOTHING_TO_ADOPT: RuntimeBrowserClientPageAdoptionResult = Object.freeze({

@@ -1,3 +1,4 @@
+import { getRuntimeBrowserPageRegistry } from '../../browser/client-pages/runtime-browser-page-registry'
 import { releaseBrowserClientDownloadTransfersForPage } from '../../browser/downloads/browser-client-download-transfer-store'
 import { BrowserHostLeaseRegistry } from './browser-host-lease-registry'
 import {
@@ -28,6 +29,10 @@ export function getBrowserHostLeaseRegistry(
       }
     })
     registries.set(runtime, registry)
+    const owner = registry
+    getRuntimeBrowserPageRegistry(runtime).setRetirementListener((page) => {
+      owner.cancelClientPageInitialization(page.browserPageId, page.placement)
+    })
   }
   return registry
 }

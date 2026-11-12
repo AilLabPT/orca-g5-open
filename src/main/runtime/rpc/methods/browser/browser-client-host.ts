@@ -52,18 +52,21 @@ export const BROWSER_CLIENT_HOST_METHODS = [
           .listPages()
           .map((page) => [page.browserPageId, page.placement])
       )
-      const handle = registry.attach({
-        browserHostClientId: params.browserHostClientId,
-        connectionId,
-        pairedDeviceId,
-        hostCapabilities: params.hostCapabilities,
-        pageCommandProtocolVersion: params.pageCommandProtocolVersion,
-        pageInventoryProtocolVersion: params.pageInventoryProtocolVersion,
-        pageInventory: params.pageInventory,
-        pageReconciliationProtocolVersion: params.pageReconciliationProtocolVersion,
-        leaseReconnectProtocolVersion: params.leaseReconnectProtocolVersion,
-        fileChannelProtocolVersion: params.fileChannelProtocolVersion
-      })
+      const handle = registry.attach(
+        {
+          browserHostClientId: params.browserHostClientId,
+          connectionId,
+          pairedDeviceId,
+          hostCapabilities: params.hostCapabilities,
+          pageCommandProtocolVersion: params.pageCommandProtocolVersion,
+          pageInventoryProtocolVersion: params.pageInventoryProtocolVersion,
+          pageInventory: params.pageInventory,
+          pageReconciliationProtocolVersion: params.pageReconciliationProtocolVersion,
+          leaseReconnectProtocolVersion: params.leaseReconnectProtocolVersion,
+          fileChannelProtocolVersion: params.fileChannelProtocolVersion
+        },
+        () => runtime.markClientHostedPagesReconciled(pairedDeviceId)
+      )
       let releaseCommandDelivery = (): void => {}
       let resolveDisconnected = (): void => {}
       const whenDisconnected = new Promise<void>((resolve) => {
@@ -125,11 +128,6 @@ export const BROWSER_CLIENT_HOST_METHODS = [
         // Adopt surviving client guests before recovery, which only reconciles records the runtime already knows.
         const adoption = await adoptRuntimeBrowserClientPagesFromInventory({
           lease: handle.lease,
-          onReconciled: () => {
-            if (!initializationSignal.aborted) {
-              runtime.markClientHostedPagesReconciled(pairedDeviceId)
-            }
-          },
           authority: registry,
           pages: getRuntimeBrowserPageRegistry(runtime),
           notifyWorkspace: (workspaceId) => runtime.notifyMobileSessionTabsChanged(workspaceId),
@@ -137,10 +135,6 @@ export const BROWSER_CLIENT_HOST_METHODS = [
             runtime.resolveBrowserExecutionHostKeyForWorkspace(workspaceId),
           signal: initializationSignal
         })
-        if (adoption.unadoptedPageIds.length === 0) {
-          // Clear reconciliation hold only after every live guest has a record; otherwise retain it until later attach or window deadline.
-          runtime.markClientHostedPagesReconciled(pairedDeviceId)
-        }
         await recoverUnavailableRuntimeBrowserClientPages({
           lease: handle.lease,
           authority: registry,
@@ -152,8 +146,14 @@ export const BROWSER_CLIENT_HOST_METHODS = [
           resolveExecutionHostKey: (workspaceId) =>
             runtime.resolveBrowserExecutionHostKeyForWorkspace(workspaceId),
           adoptedPageIds: new Set(adoption.adoptedPageIds),
+          claimedPageIds: new Set(adoption.claimedPageIds),
           signal: initializationSignal
         })
+        const claimed = new Set(adoption.claimedPageIds)
+        registry.sealClientPageInitializations(
+          handle.lease,
+          adoption.unadoptedPageIds.some((id) => !claimed.has(id))
+        )
         const reason = await Promise.race([
           handle.whenFenced,
           whenDisconnected.then(() => undefined),

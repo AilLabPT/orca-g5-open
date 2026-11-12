@@ -1,3 +1,4 @@
+import { BrowserHostInitializationCompletion } from './browser-host-page-initialization-completion'
 import { settleInitialization } from './browser-host-page-initialization-settlement'
 import { scheduleInitializationQueue } from './browser-host-page-initialization-queue'
 import {
@@ -34,6 +35,7 @@ import {
 export type { BrowserHostPageInitializationInput } from './browser-host-page-initialization-records'
 
 export class BrowserHostPageInitializations {
+  private readonly completion = new BrowserHostInitializationCompletion()
   private readonly records = new Map<string, InitializationRecord>()
   private readonly queues = new Map<symbol, InitializationQueue>()
   private readonly attachments = new Map<string, BrowserHostLeaseState>()
@@ -57,13 +59,26 @@ export class BrowserHostPageInitializations {
     )
   }
 
+  sealAttach(state: BrowserHostLeaseState, blocked: boolean, connectionId?: string): void {
+    if (connectionId && state.lease.connectionId !== connectionId) {
+      return
+    }
+    this.completion.seal(state, blocked)
+  }
+
   observeAttach(
     state: BrowserHostLeaseState,
-    inventory: readonly BrowserClientHostedPageInventory[] | undefined
+    inventory: readonly BrowserClientHostedPageInventory[] | undefined,
+    complete: () => void = () => {}
   ): void {
+    this.completion.begin(state, this.records.values(), complete)
     this.attachments.set(state.lease.browserHostClientId, state)
-    observeInitializationAttach(this.records, state, inventory, (operation) =>
-      this.cancelOperation(operation)
+    observeInitializationAttach(
+      this.records,
+      state,
+      inventory,
+      (operation) => this.cancelOperation(operation),
+      (record) => this.completion.settle(record, record.closed ? 'disposed' : 'retained-clean')
     )
   }
 
@@ -104,14 +119,18 @@ export class BrowserHostPageInitializations {
       this.queues,
       this.attachments,
       (admission) => this.releaseAdmission(admission),
+      (record, admission) => this.enqueue(record, admission),
+      (id) => this.authority.placements.claimClientPageCleanup(id),
       state
     )
+    this.completion.retire(state)
   }
 
   private admissionOwner(): InitializationAdmissionOwner {
     return {
       records: this.records,
       placements: this.authority.placements,
+      join: (state, record) => this.completion.join(state, record),
       requireState: this.requireState,
       observer: (state, input) => this.observer(state, input),
       cancelOperation: (operation) => this.cancelOperation(operation),
@@ -127,6 +146,10 @@ export class BrowserHostPageInitializations {
     if (!record || !sameInitializationPlacement(record.expected, expected)) {
       return false
     }
+    if (record.authorityRetired && !record.operation && !record.successor) {
+      this.records.delete(id)
+      return true
+    }
     record.closed = true
     if (record.successor) {
       this.releaseAdmission(record.successor)
@@ -139,6 +162,8 @@ export class BrowserHostPageInitializations {
       if (state && record.target) {
         this.startClosedCleanup(record, state)
       } else if (!record.target) {
+        record.releaseCleanup?.()
+        this.completion.settle(record, 'disposed')
         this.records.delete(id)
       }
     }
@@ -169,7 +194,9 @@ export class BrowserHostPageInitializations {
       executing: false,
       detached: false
     }
+    record.scope = admission.state
     record.operation = operation
+    this.completion.join(admission.state, record)
     const queue = this.queues.get(admission.state.token) ?? {
       pending: [],
       active: 0,
@@ -217,7 +244,7 @@ export class BrowserHostPageInitializations {
     if (operation.admission.reservation) {
       this.authority.placements.cancelClientPageReservation(operation.admission.reservation)
     }
-    if (!operation.running) {
+    if (!operation.running && !operation.record.target) {
       const queue = this.queues.get(operation.admission.state.token)
       const index = queue?.pending.indexOf(operation) ?? -1
       if (index >= 0) {
@@ -261,7 +288,9 @@ export class BrowserHostPageInitializations {
       detached: false
     }
     operation.controller.abort()
+    record.scope = state
     record.operation = operation
+    this.completion.join(state, record)
     // A rebound native close is charged to the current dispatcher; no replacement is created.
     const queue = this.queues.get(state.token) ?? { pending: [], active: 0, scheduled: false }
     this.queues.set(state.token, queue)
@@ -272,6 +301,7 @@ export class BrowserHostPageInitializations {
   private settle(operation: Initialization, outcome: InitializationOutcome): void {
     settleInitialization(operation, outcome, {
       authority: this.authority,
+      completed: (record, outcome) => this.completion.settle(record, outcome),
       records: this.records,
       queues: this.queues,
       retireLease: this.retireLease,

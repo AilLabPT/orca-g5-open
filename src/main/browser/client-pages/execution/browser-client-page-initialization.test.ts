@@ -32,8 +32,8 @@ it('keeps initialization inventory requested, then adopts the committed redirect
   })
   const dispatcher = new BrowserClientHostCommandDispatcher({
     authority: create(),
-    handler: (event, signal) => executor.handle(event, signal),
-    cancelInitialization: (event) => executor.cancelInitialization(event)
+    handler: (event, signal, close) => executor.handle(event, signal, close),
+    acquireInitialization: (event) => executor.acquireInitialization(event)
   })
   await dispatcher.dispatch(create())
   expect(executor.snapshotPageInventory()[0]).toMatchObject({
@@ -81,12 +81,12 @@ it.each(['create', 'gap', 'navigate'] as const)(
     const results: string[] = []
     const dispatcher = new BrowserClientHostCommandDispatcher({
       authority: create(),
-      handler: async (event, signal) => {
-        const result = await executor.handle(event, signal)
+      handler: async (event, signal, close) => {
+        const result = await executor.handle(event, signal, close)
         results.push(event.command.type)
         return result
       },
-      cancelInitialization: (event) => executor.cancelInitialization(event)
+      acquireInitialization: (event) => executor.acquireInitialization(event)
     })
     const creation = dispatcher.dispatch(create())
     if (phase !== 'create') {

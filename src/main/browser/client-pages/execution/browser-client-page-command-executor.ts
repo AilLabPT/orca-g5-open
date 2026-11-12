@@ -1,3 +1,4 @@
+import type { BrowserClientInitializationOwner } from '../../client-hosts/commands/browser-client-host-command-state'
 import { publishBrowserClientRetainedPage } from '../lifecycle/browser-client-page-availability'
 import { BrowserClientExecutorPageCreation } from './browser-client-executor-page-creation'
 import { BrowserClientPageInitializations } from './browser-client-page-initializations'
@@ -70,7 +71,8 @@ export class BrowserClientPageCommandExecutor {
 
   async handle(
     event: BrowserClientHostCommandEvent,
-    signal: AbortSignal
+    signal: AbortSignal,
+    closeInitialization?: BrowserClientInitializationOwner['close']
   ): Promise<BrowserClientHostCommandResult> {
     if (this.closed || this.authorityTransitioning || this.navigationFence.isFenced) {
       return {
@@ -79,6 +81,9 @@ export class BrowserClientPageCommandExecutor {
       }
     }
     try {
+      if (closeInitialization) {
+        return await closeInitialization(signal)
+      }
       const value = await this.executeCommand(event, signal)
       return value === undefined ? { status: 'completed' } : { status: 'completed', value }
     } catch (error) {
@@ -256,8 +261,8 @@ export class BrowserClientPageCommandExecutor {
     ).createPage(event, signal)
   }
 
-  releaseInitializationReceipt(event: BrowserClientHostCommandEvent): void {
-    this.initializers.releaseReceipt(event)
+  acquireInitialization(event: BrowserClientHostCommandEvent) {
+    return this.initializers.acquire(event)
   }
 
   cancelInitialization(event: BrowserClientHostCommandEvent): boolean {

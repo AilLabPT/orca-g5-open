@@ -13,13 +13,16 @@ import {
 import { joinBrowserClientHostCommands } from './browser-client-host-command-join'
 import {
   assertNewPageCommand,
+  cancelBrowserClientPageCommands,
   enqueueBrowserClientPageCommand,
   findExistingCommand,
   isBrowserClientPageBootstrapCommand,
   recordBrowserClientPageCommandResult,
   recordNewPageCommand,
   removeScheduledCommandPage,
-  selectCommandPage
+  selectCommandPage,
+  releaseBrowserClientPageInitialization,
+  settleBrowserClientPageInitialization
 } from './browser-client-host-command-page'
 import { BrowserClientHostCommandResultCache } from './browser-client-host-command-result-cache'
 import {
@@ -37,7 +40,7 @@ import {
 export class BrowserClientHostCommandDispatcher {
   private readonly authority: BrowserClientHostLeaseAuthority
   private readonly handler: CommandHandler
-  private readonly cancelInitialization: DispatcherOptions['cancelInitialization']
+  private readonly acquireInitialization: DispatcherOptions['acquireInitialization']
   private readonly limits: ReturnType<typeof resolveDispatcherLimits>
   private readonly resultCache: BrowserClientHostCommandResultCache
   private readonly pages = new Map<string, PageState>()
@@ -57,13 +60,10 @@ export class BrowserClientHostCommandDispatcher {
     }
     this.authority = snapshotBrowserClientHostLeaseAuthority(options.authority)
     this.handler = options.handler
-    this.cancelInitialization = options.cancelInitialization
+    this.acquireInitialization = options.acquireInitialization
     const limits = resolveDispatcherLimits(options)
     this.limits = limits
-    this.resultCache = new BrowserClientHostCommandResultCache(
-      limits,
-      options.releaseInitializationReceipt
-    )
+    this.resultCache = new BrowserClientHostCommandResultCache(limits)
     this.closedSettlement = new Promise((resolve) => {
       this.resolveClosedSettlement = resolve
     })
@@ -94,12 +94,16 @@ export class BrowserClientHostCommandDispatcher {
       throw new Error('browser_host_page_command_capacity')
     }
     const previousPage = this.pages.get(acceptedCommand.browserPageId)
+    if (acceptedCommand.command.type === 'createPage') {
+      page.initialization = this.acquireInitialization?.(acceptedCommand)
+    }
     admission.commit()
     recordNewPageCommand(page, acceptedCommand)
     if (previousPage && previousPage !== page) {
+      previousPage.initialization?.release()
       this.resultCache.releasePage(previousPage)
     }
-    const record = enqueueBrowserClientPageCommand(page, acceptedCommand, this.cancelInitialization)
+    const record = enqueueBrowserClientPageCommand(page, acceptedCommand)
     this.activeCommands += 1
     this.schedulePage(page)
     return record.promise
@@ -128,6 +132,7 @@ export class BrowserClientHostCommandDispatcher {
       if (settled) {
         page.retiring = false
         page.retired = true
+        releaseBrowserClientPageInitialization(page)
       } else if (page.retirementPromise === retirement) {
         page.retirementPromise = undefined
       }
@@ -142,6 +147,7 @@ export class BrowserClientHostCommandDispatcher {
       return false
     }
     this.retiredGenerationFloor = Math.max(this.retiredGenerationFloor, pageHostGeneration)
+    releaseBrowserClientPageInitialization(page)
     this.resultCache.releasePage(page)
     return this.pages.delete(browserPageId)
   }
@@ -165,6 +171,9 @@ export class BrowserClientHostCommandDispatcher {
       this.limits.joinTimeoutMs
     )
     if (settled) {
+      for (const page of this.pages.values()) {
+        page.initialization?.release()
+      }
       this.pages.clear()
       this.resultCache.clear()
     }
@@ -215,7 +224,7 @@ export class BrowserClientHostCommandDispatcher {
     })
     let handled: BrowserClientHostCommandResult | Promise<BrowserClientHostCommandResult>
     try {
-      handled = this.handler(record.event, record.controller.signal)
+      handled = this.handler(record.event, record.controller.signal, record.closeInitialization)
     } catch {
       handled = Promise.reject(new Error('handler failed'))
     }
@@ -247,6 +256,7 @@ export class BrowserClientHostCommandDispatcher {
       recordBrowserClientPageCommandResult(page, record.event.command, result)
     }
     record.status = 'settled'
+    settleBrowserClientPageInitialization(page, record, result)
     record.controller = undefined
     record.handlerPromise = undefined
     this.removeActiveRecord(page, record)
@@ -261,6 +271,9 @@ export class BrowserClientHostCommandDispatcher {
     }
     this.drain()
     if (this.closed && this.runningHandlers === 0) {
+      for (const page of this.pages.values()) {
+        page.initialization?.release()
+      }
       this.pages.clear()
       this.resultCache.clear()
       this.settleClosedHandlers()
@@ -280,20 +293,9 @@ export class BrowserClientHostCommandDispatcher {
     errorCode: string,
     preserveInitializationCleanup = false
   ): void {
-    for (const record of page.queue.slice()) {
-      if (preserveInitializationCleanup && record.initializationCleanup) {
-        continue
-      }
-      if (record.status === 'running') {
-        record.status = 'cancelling'
-        record.controller?.abort()
-        resolveCommandRecord(record, failedCommandResult(errorCode))
-      } else if (record.status === 'queued') {
-        record.status = 'settled'
-        resolveCommandRecord(record, failedCommandResult(errorCode))
-        this.removeActiveRecord(page, record)
-      }
-    }
+    cancelBrowserClientPageCommands(page, errorCode, preserveInitializationCleanup, (record) =>
+      this.removeActiveRecord(page, record)
+    )
   }
 
   private removeActiveRecord(page: PageState, record: CommandRecord): void {

@@ -15,11 +15,13 @@ it.each(['create', 'gap', 'navigate', 'publication'])(
       void retireRuntimeBrowserClientPage(
         {
           getBrowserHostLeaseRegistry: () => h.authority,
+          notifyHeadlessBrowserSessionTabsChanged: (id) =>
+            h.hostRuntime.notifyMobileSessionTabsChanged(id),
           getRuntimeBrowserPageRegistry: () => h.pages,
           resolveBrowserWorkspace: async () => ({ id: 'workspace' })
         },
         page
-      ).then(closed.resolve, closed.reject)
+      ).then(() => closed.resolve(), closed.reject)
     }
     if (phase === 'gap') {
       h.hooks.onResult = (event) => {

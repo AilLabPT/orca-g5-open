@@ -19,6 +19,7 @@ export function settleInitialization(
   owner: {
     authority: Omit<InitializationTransactionAuthority, 'current'>
     records: Map<string, InitializationRecord>
+    completed(record: InitializationRecord, outcome: InitializationOutcome): void
     queues: Map<symbol, InitializationQueue>
     retireLease(state: BrowserHostLeaseState): void
     clean(operation: Initialization): void
@@ -67,6 +68,7 @@ export function settleInitialization(
     successor.input.isCurrent()
   ) {
     record.browserHostClientId = successor.state.lease.browserHostClientId
+    record.authorityRetired = false
     if (
       !record.target &&
       !sameInitializationTarget(successor.input.previous, operation.retiredTarget)
@@ -78,9 +80,13 @@ export function settleInitialization(
     if (successor) {
       owner.releaseAdmission(successor)
     }
-    notifyInitialization(record, record.closed ? 'disposed' : outcome)
+    const terminalOutcome = record.closed ? 'disposed' : outcome
+    owner.completed(record, terminalOutcome)
+    notifyInitialization(record, terminalOutcome)
     record.observer = undefined
     if (!record.target) {
+      record.releaseCleanup?.()
+      record.releaseCleanup = undefined
       owner.records.delete(record.browserPageId)
     }
   }
