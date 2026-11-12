@@ -162,6 +162,7 @@ function options(): OrcadDeployOptions {
     host,
     remoteHome: 'C:/Users/u',
     localOrcadDir: '/local/out/orcad',
+    runtimeCacheRoot: 'C:/g5-isolated-test/runtime-cache',
     target: 'win32-x64',
     nodePath: 'C:/host/node.exe',
     userDataDir: 'C:/Users/u/.orca',
