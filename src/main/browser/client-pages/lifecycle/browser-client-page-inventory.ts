@@ -29,6 +29,7 @@ export function createBrowserClientPageInventory(
     browserProfileId: event.command.browserProfileId,
     executionHostKey: event.command.executionHostKey,
     state,
+    ...(event.command.initialUrl === undefined ? {} : { currentUrl: event.command.initialUrl }),
     ...(event.command.workspaceId ? { workspaceId: event.command.workspaceId } : {})
   })
 }

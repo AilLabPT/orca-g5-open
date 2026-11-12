@@ -14,6 +14,7 @@ export type ClientHostedPageAdoptionCandidacy = {
   /** This process's id. An entry already naming it was placed by us, not by a predecessor. */
   authorityRuntimeId: string
   hasRuntimePage: (browserPageId: string) => boolean
+  hasSavedPage?: (page: BrowserClientHostedPageInventory) => boolean
 }
 
 /** Adopt only untracked predecessor pages; pages this process closed must not be resurrected. */
@@ -21,7 +22,7 @@ export function selectAdoptableClientHostedPages(
   input: ClientHostedPageAdoptionCandidacy
 ): readonly AdoptableClientHostedPage[] {
   return input.inventory.filter((page): page is AdoptableClientHostedPage => {
-    if (page.state !== 'active') {
+    if (page.state !== 'active' && !input.hasSavedPage?.(page)) {
       return false
     }
     if (page.workspaceId === undefined) {
@@ -30,7 +31,7 @@ export function selectAdoptableClientHostedPages(
     if (page.browserHostClientId !== input.browserHostClientId) {
       return false
     }
-    if (page.authorityRuntimeId === input.authorityRuntimeId) {
+    if (page.authorityRuntimeId === input.authorityRuntimeId && !input.hasSavedPage?.(page)) {
       return false
     }
     return !input.hasRuntimePage(page.browserPageId)
@@ -56,6 +57,7 @@ export function buildClientPageAdoptionIntents(input: {
   lease: ClientHostedPageAdoptionLease
   /** Current workspace key, not the predecessor's key. */
   executionHostKeyByWorkspaceId: ReadonlyMap<string, string>
+  savedUrlByPageId?: ReadonlyMap<string, string>
 }): readonly BrowserHostRuntimePageIntent[] {
   const ordered = [...input.pages].sort(
     (left, right) => left.pageHostGeneration - right.pageHostGeneration
@@ -79,13 +81,14 @@ export function buildClientPageAdoptionIntents(input: {
         browserPageId: page.browserPageId,
         browserProfileId: page.browserProfileId,
         executionHostKey,
-        workspaceId: page.workspaceId
+        workspaceId: page.workspaceId,
+        url: page.currentUrl ?? input.savedUrlByPageId?.get(page.browserPageId)
       })
     ]
   })
 }
 
-type ReconciliationOptions = {
+export type BrowserHostClientPageAdoptionOptions = {
   maxConcurrency?: number
   actionTimeoutMs?: number
   signal?: AbortSignal
@@ -97,7 +100,7 @@ export type BrowserHostClientPageAdoptionDependencies = {
     adopt(
       state: BrowserHostLeaseState,
       intents: readonly BrowserHostRuntimePageIntent[],
-      options: ReconciliationOptions
+      options: BrowserHostClientPageAdoptionOptions
     ): Promise<unknown>
   }
   placements: { getPlacement(browserPageId: string): RuntimeBrowserPlacement | undefined }
@@ -107,7 +110,7 @@ export type BrowserHostClientPageAdoptionDependencies = {
 /** Retain grants for committed placements even after partial reconciliation failure; revocation would strand live pages. */
 export async function adoptBrowserHostClientPages(
   intents: readonly BrowserHostRuntimePageIntent[],
-  options: ReconciliationOptions,
+  options: BrowserHostClientPageAdoptionOptions,
   dependencies: BrowserHostClientPageAdoptionDependencies
 ): Promise<readonly string[]> {
   if (intents.length === 0) {

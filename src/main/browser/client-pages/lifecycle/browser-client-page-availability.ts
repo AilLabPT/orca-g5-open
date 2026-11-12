@@ -27,7 +27,8 @@ export function markBrowserClientPageUnavailable(
 export function publishBrowserClientRetainedPage(
   dependencies: BrowserClientPageCommandExecutorDependencies,
   pages: Map<string, BrowserClientRetainedPage>,
-  page: BrowserClientRetainedPage
+  page: BrowserClientRetainedPage,
+  onInitializationUnavailable?: () => void
 ): void {
   const previous = pages.get(page.inventory.browserPageId)
   previous?.releaseAvailabilityWatch?.()
@@ -36,10 +37,17 @@ export function publishBrowserClientRetainedPage(
   }
   page.releaseAvailabilityWatch = dependencies.routeWebContents.watchPageAvailability?.(
     page.inventory.browserPageId,
-    (registration) =>
-      markBrowserClientPageUnavailable(pages, registration, (browserPageId, generation) =>
+    (registration) => {
+      if (
+        pages.get(registration.browserPageId) === page &&
+        page.inventory.state === 'outcomeUnknown'
+      ) {
+        onInitializationUnavailable?.()
+      }
+      return markBrowserClientPageUnavailable(pages, registration, (browserPageId, generation) =>
         dependencies.onPageUnavailable?.(browserPageId, generation)
       )
+    }
   )
   pages.set(page.inventory.browserPageId, page)
 }

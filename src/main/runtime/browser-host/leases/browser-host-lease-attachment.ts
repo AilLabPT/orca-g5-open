@@ -1,3 +1,9 @@
+import type { BrowserHostGenerationCounter } from './browser-host-generation-counter'
+import type { BrowserHostLeaseReconnectController } from './browser-host-lease-reconnect'
+import type { BrowserHostLeaseHandle } from './browser-host-lease-records'
+import { assertBrowserHostLeaseAdmission } from './browser-host-lease-records'
+import { snapshotBrowserHostPageInventory } from '../reconciliation/browser-host-page-inventory-snapshot'
+
 import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import { BrowserHostCommandLedger } from '../commands/browser-host-command-ledger'
 import { BrowserExecutionHostGrantRegistry } from './browser-execution-host-grant-registry'
@@ -100,4 +106,43 @@ export function createBrowserHostLeaseState(options: {
     })
   }
   return state
+}
+
+export function attachBrowserHostLease(
+  input: BrowserHostLeaseAttachInput,
+  context: {
+    authorityRuntimeId: string
+    authorityEpoch: string
+    leasesByClientId: Map<string, BrowserHostLeaseState>
+    reconnects: BrowserHostLeaseReconnectController
+    generations: BrowserHostGenerationCounter
+    observeInventory(state: BrowserHostLeaseState): void
+    fenceLease(state: BrowserHostLeaseState): void
+  }
+): BrowserHostLeaseHandle {
+  const pageInventory = snapshotBrowserHostPageInventory(input)
+  assertBrowserHostReconnectNegotiation(input)
+  const existing = context.leasesByClientId.get(input.browserHostClientId)
+  if (existing && existing.lease.pairedDeviceId !== input.pairedDeviceId) {
+    throw new Error('browser_host_identity_conflict')
+  }
+  assertBrowserHostLeaseAdmission(context.leasesByClientId.values(), input, existing)
+  const restored = existing ? context.reconnects.restore(existing, input, pageInventory) : undefined
+  if (restored && existing) {
+    context.observeInventory(existing)
+    return restored
+  }
+  const generation = context.generations.take('host')
+  if (existing) {
+    context.fenceLease(existing)
+  }
+  const state = createBrowserHostLeaseState({
+    authorityRuntimeId: context.authorityRuntimeId,
+    authorityEpoch: context.authorityEpoch,
+    generation,
+    input,
+    pageInventory
+  })
+  context.leasesByClientId.set(input.browserHostClientId, state)
+  return context.reconnects.createHandle(state)
 }

@@ -13,6 +13,7 @@ import {
 import { joinBrowserClientHostCommands } from './browser-client-host-command-join'
 import {
   assertNewPageCommand,
+  enqueueBrowserClientPageCommand,
   findExistingCommand,
   isBrowserClientPageBootstrapCommand,
   recordBrowserClientPageCommandResult,
@@ -22,7 +23,6 @@ import {
 } from './browser-client-host-command-page'
 import { BrowserClientHostCommandResultCache } from './browser-client-host-command-result-cache'
 import {
-  createCommandRecord,
   type CommandHandler,
   type DispatcherOptions,
   failedCommandResult,
@@ -37,11 +37,8 @@ import {
 export class BrowserClientHostCommandDispatcher {
   private readonly authority: BrowserClientHostLeaseAuthority
   private readonly handler: CommandHandler
-  private readonly maxPages: number
-  private readonly maxActiveCommands: number
-  private readonly maxConcurrentHandlers: number
-  private readonly maxQueuedCommandsPerPage: number
-  private readonly joinTimeoutMs: number
+  private readonly cancelInitialization: DispatcherOptions['cancelInitialization']
+  private readonly limits: ReturnType<typeof resolveDispatcherLimits>
   private readonly resultCache: BrowserClientHostCommandResultCache
   private readonly pages = new Map<string, PageState>()
   private readonly readyPages: PageState[] = []
@@ -60,13 +57,10 @@ export class BrowserClientHostCommandDispatcher {
     }
     this.authority = snapshotBrowserClientHostLeaseAuthority(options.authority)
     this.handler = options.handler
+    this.cancelInitialization = options.cancelInitialization
     const limits = resolveDispatcherLimits(options)
-    this.maxPages = limits.maxPages
-    this.maxActiveCommands = limits.maxActiveCommands
-    this.maxConcurrentHandlers = limits.maxConcurrentHandlers
-    this.maxQueuedCommandsPerPage = limits.maxQueuedCommandsPerPage
+    this.limits = limits
     this.resultCache = new BrowserClientHostCommandResultCache(limits)
-    this.joinTimeoutMs = limits.joinTimeoutMs
     this.closedSettlement = new Promise((resolve) => {
       this.resolveClosedSettlement = resolve
     })
@@ -80,7 +74,7 @@ export class BrowserClientHostCommandDispatcher {
     const acceptedCommand = snapshotCommandEvent(command)
     const admission = selectCommandPage(
       this.pages,
-      this.maxPages,
+      this.limits.maxPages,
       this.retiredGenerationFloor,
       acceptedCommand
     )
@@ -90,10 +84,10 @@ export class BrowserClientHostCommandDispatcher {
       return existing.promise
     }
     assertNewPageCommand(page, acceptedCommand)
-    if (this.activeCommands >= this.maxActiveCommands) {
+    if (this.activeCommands >= this.limits.maxActiveCommands) {
       throw new Error('browser_host_command_capacity')
     }
-    if (page.queue.length >= this.maxQueuedCommandsPerPage) {
+    if (page.queue.length >= this.limits.maxQueuedCommandsPerPage) {
       throw new Error('browser_host_page_command_capacity')
     }
     const previousPage = this.pages.get(acceptedCommand.browserPageId)
@@ -102,11 +96,7 @@ export class BrowserClientHostCommandDispatcher {
     if (previousPage && previousPage !== page) {
       this.resultCache.releasePage(previousPage)
     }
-    const record = createCommandRecord(acceptedCommand)
-    page.records.set(acceptedCommand.commandSequence, record)
-    page.sequencesByCommandId.set(acceptedCommand.commandId, acceptedCommand.commandSequence)
-    page.queue.push(record)
-    page.nextSequence += 1
+    const record = enqueueBrowserClientPageCommand(page, acceptedCommand, this.cancelInitialization)
     this.activeCommands += 1
     this.schedulePage(page)
     return record.promise
@@ -133,7 +123,8 @@ export class BrowserClientHostCommandDispatcher {
     this.cancelPage(page, 'browser_host_command_cancelled')
     void this.waitForPageHandlers(page).then((settled) => {
       if (settled) {
-        this.finishRetirement(page)
+        page.retiring = false
+        page.retired = true
       } else if (page.retirementPromise === retirement) {
         page.retirementPromise = undefined
       }
@@ -168,7 +159,7 @@ export class BrowserClientHostCommandDispatcher {
       [...this.pages.values()].flatMap((page) =>
         page.queue.flatMap((record) => (record.handlerPromise ? [record.handlerPromise] : []))
       ),
-      this.joinTimeoutMs
+      this.limits.joinTimeoutMs
     )
     if (settled) {
       this.pages.clear()
@@ -198,7 +189,7 @@ export class BrowserClientHostCommandDispatcher {
   }
 
   private drain(): void {
-    while (!this.closed && this.runningHandlers < this.maxConcurrentHandlers) {
+    while (!this.closed && this.runningHandlers < this.limits.maxConcurrentHandlers) {
       const page = this.readyPages.shift()
       if (!page) {
         return
@@ -213,7 +204,7 @@ export class BrowserClientHostCommandDispatcher {
 
   private startHandler(page: PageState, record: CommandRecord): void {
     record.status = 'running'
-    record.controller = new AbortController()
+    record.controller ??= new AbortController()
     this.runningHandlers += 1
     let finishJoin = (): void => {}
     record.handlerPromise = new Promise<void>((resolve) => {
@@ -257,10 +248,11 @@ export class BrowserClientHostCommandDispatcher {
     record.handlerPromise = undefined
     this.removeActiveRecord(page, record)
     if (isBrowserClientPageBootstrapCommand(record.event.command) && !page.created) {
-      this.cancelPage(page, 'browser_host_command_dependency_failed')
+      this.cancelPage(page, 'browser_host_command_dependency_failed', true)
     }
     if (page.retiring && page.queue.length === 0) {
-      this.finishRetirement(page)
+      page.retiring = false
+      page.retired = true
     } else {
       this.schedulePage(page)
     }
@@ -280,8 +272,15 @@ export class BrowserClientHostCommandDispatcher {
     this.resolveClosedSettlement()
   }
 
-  private cancelPage(page: PageState, errorCode: string): void {
+  private cancelPage(
+    page: PageState,
+    errorCode: string,
+    preserveInitializationCleanup = false
+  ): void {
     for (const record of page.queue.slice()) {
+      if (preserveInitializationCleanup && record.initializationCleanup) {
+        continue
+      }
       if (record.status === 'running') {
         record.status = 'cancelling'
         record.controller?.abort()
@@ -304,12 +303,7 @@ export class BrowserClientHostCommandDispatcher {
   private async waitForPageHandlers(page: PageState): Promise<boolean> {
     return joinBrowserClientHostCommands(
       page.queue.flatMap((record) => (record.handlerPromise ? [record.handlerPromise] : [])),
-      this.joinTimeoutMs
+      this.limits.joinTimeoutMs
     )
-  }
-
-  private finishRetirement(page: PageState): void {
-    page.retiring = false
-    page.retired = true
   }
 }

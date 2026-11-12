@@ -1,3 +1,7 @@
+import { publishBrowserClientRetainedPage } from '../lifecycle/browser-client-page-availability'
+import { BrowserClientExecutorPageCreation } from './browser-client-executor-page-creation'
+import { BrowserClientPageInitializations } from './browser-client-page-initializations'
+import { BrowserClientPageMetadataParams } from '../../../../shared/browser/client-hosting/browser-client-page-metadata-protocol'
 import { closeBrowserClientExecutorPages } from './browser-client-page-executor-close'
 import {
   BrowserClientProfileSwitches,
@@ -11,14 +15,7 @@ import {
 import type { BrowserClientAutomationResult as BrowserClientHostCommandResult } from '../../../../shared/browser/client-hosting/browser-client-automation-protocol'
 import { cleanupRetainedBrowserClientPage } from '../lifecycle/browser-client-page-cleanup'
 import type { BrowserClientPageRendererIdentity } from '../../../../shared/browser/client-hosting/browser-client-page-renderer-protocol'
-import { assertBrowserClientPageAdmission } from '../lifecycle/browser-client-page-admission'
-import { createReservedBrowserClientPage } from '../lifecycle/browser-client-page-creation'
-import { retireSupersededExecutionHostPages } from '../lifecycle/browser-client-page-execution-host-supersession'
-import {
-  browserClientPageCommandFailure,
-  BrowserClientPageCommandError,
-  isBrowserClientPageCleanupFailure
-} from './browser-client-page-command-failure'
+import { browserClientPageCommandFailure } from './browser-client-page-command-failure'
 import { BrowserClientPageNavigationFence } from '../lifecycle/browser-client-page-navigation-fence'
 import { executeBrowserClientPageReconciliationCommand } from '../lifecycle/browser-client-page-reconciliation'
 import {
@@ -27,7 +24,6 @@ import {
   type BrowserClientRetainedPage
 } from '../lifecycle/browser-client-page-retained-state'
 import {
-  createBrowserClientPageInventory,
   recordBrowserClientPagePublishedUrl,
   snapshotBrowserClientPageInventoryList
 } from '../lifecycle/browser-client-page-inventory'
@@ -35,7 +31,6 @@ import {
   executeBrowserClientPageAutomationCommand,
   navigateBrowserClientPageCommand
 } from './browser-client-page-command-execution'
-import { publishBrowserClientRetainedPage } from '../lifecycle/browser-client-page-availability'
 import {
   pageAuthorityIdentity,
   type BrowserClientPageAuthorityIdentity,
@@ -47,6 +42,7 @@ export class BrowserClientPageCommandExecutor {
   private readonly pages = new Map<string, BrowserClientRetainedPage>()
   private readonly creatingPages = new Map<string, BrowserClientHostedPageInventory>()
   private readonly failedPages = new Map<string, BrowserClientHostedPageInventory>()
+  private readonly initializers: BrowserClientPageInitializations
   private readonly profileSwitches = new BrowserClientProfileSwitches()
   private readonly navigationFence = new BrowserClientPageNavigationFence()
   private closePromise: Promise<void> | null = null
@@ -55,6 +51,12 @@ export class BrowserClientPageCommandExecutor {
   private closed = false
 
   constructor(private readonly dependencies: BrowserClientPageCommandExecutorDependencies) {
+    this.initializers = new BrowserClientPageInitializations(
+      this.pages,
+      this.failedPages,
+      dependencies.routeWebContents,
+      (page) => this.cleanupPage(page)
+    )
     this.authority = pageAuthorityIdentity(dependencies)
     this.maxPages = dependencies.maxPages ?? BROWSER_CLIENT_HOST_PAGE_INVENTORY_MAX_PAGES
     if (
@@ -107,6 +109,9 @@ export class BrowserClientPageCommandExecutor {
       case 'createPage':
         return this.createPage(event, signal)
       case 'navigate':
+        if (this.initializers.has(event.browserPageId)) {
+          return this.initializers.initialize(event, signal)
+        }
         return navigateBrowserClientPageCommand(
           this.pages,
           this.dependencies.routeWebContents,
@@ -125,31 +130,39 @@ export class BrowserClientPageCommandExecutor {
           }
         )
       case 'reclaimPage':
+        return this.reconcilePage(event, signal)
       case 'closePage':
+        if (this.initializers.has(event.browserPageId)) {
+          return this.initializers.close(event, signal)
+        }
+        return this.reconcilePage(event, signal)
       case 'restorePage':
-        return executeBrowserClientPageReconciliationCommand(
-          {
-            pages: this.pages,
-            failedPages: this.failedPages,
-            routeWebContents: this.dependencies.routeWebContents,
-            assertAvailable: () =>
-              this.navigationFence.assertAvailable(this.closed || this.authorityTransitioning),
-            createPage: (command, commandSignal) => this.createPage(command, commandSignal),
-            navigate: (command, commandSignal) =>
-              navigateBrowserClientPageCommand(
-                this.pages,
-                this.dependencies.routeWebContents,
-                command,
-                commandSignal
-              ),
-            retirePage: (browserPageId, generation) => this.retirePage(browserPageId, generation),
-            cleanupPage: (page, previousRendererPage) =>
-              this.cleanupPage(page, previousRendererPage)
-          },
-          event,
-          signal
-        )
+        return this.reconcilePage(event, signal)
     }
+  }
+
+  private reconcilePage(event: BrowserClientHostCommandEvent, signal: AbortSignal): Promise<void> {
+    return executeBrowserClientPageReconciliationCommand(
+      {
+        pages: this.pages,
+        failedPages: this.failedPages,
+        routeWebContents: this.dependencies.routeWebContents,
+        assertAvailable: () =>
+          this.navigationFence.assertAvailable(this.closed || this.authorityTransitioning),
+        createPage: (command, commandSignal) => this.createPage(command, commandSignal),
+        navigate: (command, commandSignal) =>
+          navigateBrowserClientPageCommand(
+            this.pages,
+            this.dependencies.routeWebContents,
+            command,
+            commandSignal
+          ),
+        retirePage: (browserPageId, generation) => this.retirePage(browserPageId, generation),
+        cleanupPage: (page, previousRendererPage) => this.cleanupPage(page, previousRendererPage)
+      },
+      event,
+      signal
+    )
   }
 
   hasPage(browserPageId: string, pageHostGeneration: number): boolean {
@@ -164,8 +177,14 @@ export class BrowserClientPageCommandExecutor {
     return this.failedPages.get(browserPageId)?.pageHostGeneration === pageHostGeneration
   }
 
-  readonly recordPublishedPageUrl = (params: unknown): void =>
-    recordBrowserClientPagePublishedUrl(this.pages, params)
+  readonly recordPublishedPageUrl = (params: unknown): void => {
+    // Only actual initialization owns a requested URL; published pages keep ordinary metadata semantics.
+    const parsed = BrowserClientPageMetadataParams.safeParse(params)
+    if (!parsed.success || this.initializers.has(parsed.data.browserPageId)) {
+      return
+    }
+    recordBrowserClientPagePublishedUrl(this.pages, parsed.data)
+  }
 
   snapshotPageInventory(): readonly BrowserClientHostedPageInventory[] {
     return snapshotBrowserClientPageInventoryList(
@@ -177,6 +196,7 @@ export class BrowserClientPageCommandExecutor {
 
   close(): Promise<void> {
     this.closed = true
+    this.initializers.cancelAll()
     return (this.closePromise ??= this.navigationFence.fenceBeforeCleanup(
       this.profileSwitches.withStagedPages(this.pages.values()),
       (claim) => this.dependencies.routeWebContents.revokeNavigation(claim),
@@ -185,6 +205,7 @@ export class BrowserClientPageCommandExecutor {
   }
 
   fenceNavigation(): void {
+    this.initializers.cancelAll()
     this.navigationFence.fence(this.profileSwitches.withStagedPages(this.pages.values()), (claim) =>
       this.dependencies.routeWebContents.revokeNavigation(claim)
     )
@@ -195,6 +216,7 @@ export class BrowserClientPageCommandExecutor {
       throw new Error('browser_client_page_authority_transition_unavailable')
     }
     this.authorityTransitioning = true
+    this.initializers.cancelAll()
     this.navigationFence.revoke(
       this.profileSwitches.withStagedPages(this.pages.values()),
       (claim) => this.dependencies.routeWebContents.revokeNavigation(claim)
@@ -219,52 +241,22 @@ export class BrowserClientPageCommandExecutor {
     )
   }
 
-  private async createPage(
-    event: BrowserClientHostCommandEvent,
-    signal: AbortSignal
-  ): Promise<void> {
-    if (event.command.type !== 'createPage') {
-      throw new BrowserClientPageCommandError('browser_client_page_command_invalid')
-    }
-    assertBrowserClientPageAdmission(
-      [this.pages, this.creatingPages, this.failedPages],
+  private createPage(event: BrowserClientHostCommandEvent, signal: AbortSignal): Promise<void> {
+    return new BrowserClientExecutorPageCreation(
+      this.dependencies,
+      this.authority,
+      this.pages,
+      this.creatingPages,
+      this.failedPages,
+      this.initializers,
       this.maxPages,
-      event.browserPageId
-    )
-    const unknownInventory = createBrowserClientPageInventory(event, 'outcomeUnknown')
-    this.creatingPages.set(event.browserPageId, unknownInventory)
-    try {
-      await this.createReservedPage(event, signal)
-    } catch (error) {
-      if (isBrowserClientPageCleanupFailure(error)) {
-        this.failedPages.set(event.browserPageId, unknownInventory)
-      }
-      throw error
-    } finally {
-      this.creatingPages.delete(event.browserPageId)
-    }
+      () => this.navigationFence.assertAvailable(this.closed || this.authorityTransitioning),
+      (id, generation) => this.retirePage(id, generation)
+    ).createPage(event, signal)
   }
 
-  private async createReservedPage(
-    event: BrowserClientHostCommandEvent,
-    signal: AbortSignal
-  ): Promise<void> {
-    await createReservedBrowserClientPage(
-      {
-        ...this.dependencies,
-        ...this.authority,
-        retireSupersededExecutionHostPages: (route) =>
-          retireSupersededExecutionHostPages(this.pages.values(), route, (id, generation) =>
-            this.retirePage(id, generation)
-          )
-      },
-      event,
-      signal,
-      () => this.navigationFence.assertAvailable(this.closed || this.authorityTransitioning),
-      (page) => {
-        publishBrowserClientRetainedPage(this.dependencies, this.pages, page)
-      }
-    )
+  cancelInitialization(event: BrowserClientHostCommandEvent): boolean {
+    return this.initializers.cancel(event)
   }
 
   findPageByWebContentsId(webContentsId: number): BrowserClientHostedPageInventory | undefined {
@@ -298,7 +290,8 @@ export class BrowserClientPageCommandExecutor {
     )
   }
 
-  private closePages(): Promise<void> {
+  private async closePages(): Promise<void> {
+    await this.initializers.closeAll()
     return closeBrowserClientExecutorPages({
       profileSwitches: this.profileSwitches,
       creatingPages: this.creatingPages,

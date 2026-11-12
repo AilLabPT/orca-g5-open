@@ -3,6 +3,8 @@ import type { BrowserClientHostCommandEvent } from '../../../../shared/browser/c
 import type { BrowserClientAutomationResult as BrowserClientHostCommandResult } from '../../../../shared/browser/client-hosting/browser-client-automation-protocol'
 import {
   createPageState,
+  createCommandRecord,
+  type DispatcherOptions,
   type CommandRecord,
   type PageState
 } from './browser-client-host-command-state'
@@ -109,7 +111,8 @@ function commandsMatch(
   if (first.command.type === 'createPage' && second.command.type === 'createPage') {
     return (
       first.command.browserProfileId === second.command.browserProfileId &&
-      first.command.executionHostKey === second.command.executionHostKey
+      first.command.executionHostKey === second.command.executionHostKey &&
+      first.command.initialUrl === second.command.initialUrl
     )
   }
   if (first.command.type === 'restorePage' && second.command.type === 'restorePage') {
@@ -168,7 +171,13 @@ export function assertNewPageCommand(
       )
     }
   }
-  if (page.createFailed) {
+  const bootstrap = page.records.get(1)?.event
+  const initializationCleanup =
+    command.command.type === 'closePage' &&
+    bootstrap?.command.type === 'createPage' &&
+    bootstrap.command.initialUrl !== undefined &&
+    sameBrowserClientPageAuthority(bootstrap, command.command.targetAuthority)
+  if (page.createFailed && !initializationCleanup) {
     throw new Error('browser_host_command_dependency_failed')
   }
 }
@@ -223,4 +232,36 @@ export function removeScheduledCommandPage(
       readyPages.splice(index, 1)
     }
   }
+}
+
+export function enqueueBrowserClientPageCommand(
+  page: PageState,
+  acceptedCommand: BrowserClientHostCommandEvent,
+  cancelInitialization: DispatcherOptions['cancelInitialization']
+): CommandRecord {
+  const record = createCommandRecord(acceptedCommand)
+  page.records.set(acceptedCommand.commandSequence, record)
+  page.sequencesByCommandId.set(acceptedCommand.commandId, acceptedCommand.commandSequence)
+  page.queue.push(record)
+  page.nextSequence += 1
+  if (acceptedCommand.command.type === 'closePage') {
+    const bootstrap = page.queue.find(
+      (candidate) =>
+        candidate.event.command.type === 'createPage' &&
+        candidate.event.command.initialUrl !== undefined
+    )
+    const queuedInitialization =
+      bootstrap &&
+      sameBrowserClientPageAuthority(bootstrap.event, acceptedCommand.command.targetAuthority) &&
+      sameBrowserClientPageAuthority(bootstrap.event, acceptedCommand)
+    if (cancelInitialization?.(acceptedCommand) || queuedInitialization) {
+      record.initializationCleanup = true
+      for (const pending of page.queue) {
+        if (pending !== record) {
+          pending.controller?.abort()
+        }
+      }
+    }
+  }
+  return record
 }

@@ -1,3 +1,5 @@
+import { releaseBrowserClientRetainedRendererPage } from './browser-client-page-retained-release'
+import { observeBrowserClientPageBootstrap } from './browser-client-page-bootstrap-readiness'
 import {
   BrowserClientPageRendererIdentity,
   type BrowserClientPageRendererIdentity as RendererPageIdentity
@@ -120,6 +122,7 @@ export class BrowserClientPageRetainedRegistry {
       return
     }
     const wasAttaching = page.status === 'attaching'
+    page.releasePreparation()
     page.status = 'retiring'
     clearTimeout(page.attachTimer)
     if (wasAttaching) {
@@ -176,7 +179,11 @@ export class BrowserClientPageRetainedRegistry {
     })
     const page = {} as RetainedPage
     const onAttached = (): void => this.observeAttachment(page)
-    const onReady = (): void => this.finishAttachment(page)
+    const releasePreparation = observeBrowserClientPageBootstrap(
+      webview,
+      () => page.status === 'attaching',
+      () => this.finishAttachment(page)
+    )
     const onDestroyed = (): void => this.handleDestroyed(page)
     const onRendererGone = (): void => this.fenceRendererLoss(page)
     Object.assign(page, {
@@ -197,7 +204,7 @@ export class BrowserClientPageRetainedRegistry {
         this.attachTimeoutMs
       ),
       onAttached,
-      onReady,
+      releasePreparation,
       onDestroyed,
       onRendererGone
     })
@@ -205,7 +212,6 @@ export class BrowserClientPageRetainedRegistry {
     page.releaseDragPassthroughSurface = enrolRetainedHostDragPassthrough(page)
     page.releasePaintRetention = retainBrowserClientPagePaint(page)
     webview.addEventListener('did-attach', onAttached)
-    webview.addEventListener('dom-ready', onReady)
     webview.addEventListener('destroyed', onDestroyed)
     webview.addEventListener('render-process-gone', onRendererGone)
     webview.addEventListener('load-commit', page.onLoadCommit)
@@ -224,7 +230,6 @@ export class BrowserClientPageRetainedRegistry {
       return
     }
     page.attachmentObserved = true
-    this.finishAttachment(page)
   }
 
   private finishAttachment(page: RetainedPage): void {
@@ -241,6 +246,7 @@ export class BrowserClientPageRetainedRegistry {
       return
     }
     clearTimeout(page.attachTimer)
+    page.releasePreparation()
     page.status = 'attached'
     page.webContentsId = webContentsId
     page.resolveMount({ webContentsId })
@@ -250,6 +256,7 @@ export class BrowserClientPageRetainedRegistry {
     if (this.pages.get(page.key) !== page || page.status !== 'attaching') {
       return
     }
+    page.releasePreparation()
     page.status = 'retiring'
     clearTimeout(page.attachTimer)
     page.rejectMount(new Error(errorCode))
@@ -266,6 +273,7 @@ export class BrowserClientPageRetainedRegistry {
     if (page.status === 'attaching') {
       page.rejectMount(new Error('browser_client_page_renderer_process_gone'))
     }
+    page.releasePreparation()
     page.status = 'retiring'
     clearTimeout(page.attachTimer)
     this.disconnectPage(page)
@@ -285,18 +293,7 @@ export class BrowserClientPageRetainedRegistry {
     if (this.pages.get(page.key) !== page) {
       return
     }
-    clearTimeout(page.attachTimer)
-    page.releaseDragPassthroughSurface()
-    page.releasePaintRetention()
-    page.visibleAttachment?.stopTrackingViewport()
-    page.webview.removeEventListener('did-attach', page.onAttached)
-    page.webview.removeEventListener('dom-ready', page.onReady)
-    page.webview.removeEventListener('destroyed', page.onDestroyed)
-    page.webview.removeEventListener('render-process-gone', page.onRendererGone)
-    page.webview.removeEventListener('load-commit', page.onLoadCommit)
-    page.visibleAttachment = null
-    page.webview.remove()
-    page.host.remove()
+    releaseBrowserClientRetainedRendererPage(page)
     this.pages.delete(page.key)
     const nextCount = (this.partitionCounts.get(page.identity.partition) ?? 1) - 1
     if (nextCount > 0) {

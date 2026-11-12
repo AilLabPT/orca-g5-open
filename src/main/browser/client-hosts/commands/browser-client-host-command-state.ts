@@ -30,6 +30,7 @@ export type CommandRecord = {
   result?: BrowserClientHostCommandResult
   controller?: AbortController
   handlerPromise?: Promise<void>
+  initializationCleanup?: boolean
 }
 
 export type PageState = {
@@ -51,6 +52,7 @@ export type PageState = {
 export type DispatcherOptions = {
   authority: BrowserClientHostLeaseAuthority
   handler: CommandHandler
+  cancelInitialization?: (event: BrowserClientHostCommandEvent) => boolean
   maxPages?: number
   maxActiveCommands?: number
   maxConcurrentHandlers?: number
@@ -111,7 +113,7 @@ export function createCommandRecord(event: BrowserClientHostCommandEvent): Comma
   const promise = new Promise<BrowserClientHostCommandResult>((innerResolve) => {
     resolve = innerResolve
   })
-  return { event, status: 'queued', promise, resolve }
+  return { event, status: 'queued', promise, resolve, controller: new AbortController() }
 }
 
 export function snapshotCommandEvent(

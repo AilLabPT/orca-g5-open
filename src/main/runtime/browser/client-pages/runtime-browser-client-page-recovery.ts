@@ -1,3 +1,7 @@
+import { recoverClientPagesWithConcurrency } from './runtime-browser-client-page-recovery-queue'
+import type { BrowserHostLease } from '../../browser-host/leases/browser-host-lease-records'
+import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
+import { admitRuntimeBrowserPageInitialization } from './runtime-browser-page-initialization'
 import {
   BROWSER_CLIENT_AUTOMATION_HOST_CAPABILITY,
   type BrowserClientAutomationResult as BrowserClientHostCommandResult
@@ -27,6 +31,8 @@ type RecoveryAuthority = Pick<
   | 'completePageRetirement'
   | 'createClientPage'
   | 'getPlacement'
+  | 'hasClientPageInitialization'
+  | 'admitClientPageInitialization'
 > & {
   issueClientPageCommand(
     authority: {
@@ -44,6 +50,8 @@ type RecoveryAuthority = Pick<
 export async function recoverUnavailableRuntimeBrowserClientPages(options: {
   lease: BrowserClientHostLeaseAuthority & {
     pairedDeviceId: string
+    connectionId?: string
+    hostCapabilities?: readonly string[]
     pageInventory?: readonly BrowserClientHostedPageInventory[]
   }
   authority: RecoveryAuthority
@@ -77,7 +85,23 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
         isRecoverableByLease(page, options.lease) &&
         !isActiveExactPage(page, inventoryByPageId.get(page.browserPageId), options.lease)
     )
-  await mapWithConcurrency(
+  if (options.lease.hostCapabilities?.includes(BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY)) {
+    for (const page of pages) {
+      const previous = inventoryByPageId.get(page.browserPageId)
+      admitRuntimeBrowserPageInitialization({
+        ...options,
+        lease: options.lease as BrowserHostLease,
+        page,
+        url: previous?.currentUrl ?? page.url,
+        ...(previous ? { previous } : {}),
+        resolveExecutionHostKey:
+          options.resolveExecutionHostKey ??
+          (async () => ({ status: 'resolved', executionHostKey: page.executionHostKey }))
+      })
+    }
+    return
+  }
+  await recoverClientPagesWithConcurrency(
     pages,
     MAX_RECOVERY_CONCURRENCY,
     async (page) => {
@@ -89,7 +113,7 @@ export async function recoverUnavailableRuntimeBrowserClientPages(options: {
           browserPageId: page.browserPageId,
           error
         })
-        releaseUnhostablePage(page, options)
+        // The logical saved row remains closeable for a later authenticated recovery.
       }
     },
     options.signal
@@ -139,17 +163,6 @@ async function resolveRecoveryExecutionHostKey(
     options.releaseUnrecoverablePage?.(page)
   }
   return null
-}
-
-/** Retires a page left with no placement at all; anything still placed can retry on a later attach. */
-function releaseUnhostablePage(
-  page: RuntimeBrowserClientPage,
-  options: Parameters<typeof recoverUnavailableRuntimeBrowserClientPages>[0]
-): void {
-  if (options.authority.getPlacement(page.browserPageId)) {
-    return
-  }
-  options.releaseUnrecoverablePage?.(page)
 }
 
 async function recoverPage(
@@ -303,23 +316,4 @@ function assertInventoryAuthority(
   ) {
     throw new Error('browser_client_page_reconciliation_authority_stale')
   }
-}
-
-async function mapWithConcurrency<T>(
-  values: readonly T[],
-  concurrency: number,
-  operation: (value: T) => Promise<void>,
-  signal?: AbortSignal
-): Promise<void> {
-  let index = 0
-  const worker = async (): Promise<void> => {
-    while (index < values.length && !signal?.aborted) {
-      const value = values[index]
-      index += 1
-      if (value !== undefined) {
-        await operation(value)
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker))
 }

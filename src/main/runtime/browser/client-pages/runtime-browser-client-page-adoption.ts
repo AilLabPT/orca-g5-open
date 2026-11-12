@@ -1,3 +1,10 @@
+import { sameRuntimeBrowserPlacement } from '../../../../shared/runtime-browser-placement'
+import { BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
+import {
+  RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT,
+  RESTORED_CLIENT_HOSTED_EXECUTION_HOST_KEY
+} from './client-hosted-browser-page-persistence'
+import { admitRuntimeBrowserPageInitialization } from './runtime-browser-page-initialization'
 import type { BrowserClientHostedPageInventory } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
 import type { BrowserHostLease } from '../../browser-host/leases/browser-host-lease-records'
 import type { BrowserHostLeaseRegistry } from '../../browser-host/leases/browser-host-lease-registry'
@@ -11,7 +18,12 @@ import type { RuntimeBrowserPageRegistry } from './runtime-browser-page-registry
 
 type AdoptionAuthority = Pick<
   BrowserHostLeaseRegistry,
-  'authorityRuntimeId' | 'authorityEpoch' | 'adoptClientPages' | 'getPlacement'
+  | 'authorityRuntimeId'
+  | 'authorityEpoch'
+  | 'adoptClientPages'
+  | 'getPlacement'
+  | 'hasClientPageInitialization'
+  | 'admitClientPageInitialization'
 >
 
 /** Unavailable routes leave real workspaces/pages alive; only workspace-gone proves there is nowhere to restore. */
@@ -28,6 +40,7 @@ export type RuntimeBrowserClientPageAdoptionOptions = {
   /** The execution-host key that workspace's pages would be created under now. */
   resolveExecutionHostKey: (workspaceId: string) => Promise<BrowserExecutionHostKeyResolution>
   signal?: AbortSignal
+  onReconciled?: () => void
 }
 
 export type RuntimeBrowserClientPageAdoptionResult = {
@@ -55,19 +68,54 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
   ) {
     return NOTHING_TO_ADOPT
   }
+  const inventoryByPageId = new Map(inventory.map((page) => [page.browserPageId, page]))
   const adoptable = selectAdoptableClientHostedPages({
     inventory,
     browserHostClientId: options.lease.browserHostClientId,
     authorityRuntimeId: options.authority.authorityRuntimeId,
+    hasSavedPage: (inventory) => {
+      const page = options.pages.getPage(inventory.browserPageId)
+      return Boolean(
+        page &&
+        page.pairedDeviceId === options.lease.pairedDeviceId &&
+        page.workspaceId === inventory.workspaceId &&
+        page.browserProfileId === inventory.browserProfileId &&
+        (isRestoredClientHostedBrowserPlacement(page.placement) ||
+          ((inventory.state !== 'active' || inventory.currentUrl === undefined) &&
+            page.placement.browserHostClientId === inventory.browserHostClientId &&
+            page.placement.browserHostGeneration === inventory.browserHostGeneration &&
+            page.placement.pageHostGeneration === inventory.pageHostGeneration))
+      )
+    },
     // Persisted rows have no guest; let adoption rekey the reported live DOM rather than recovery destroy and recreate it.
     hasRuntimePage: (browserPageId) => {
       const page = options.pages.getPage(browserPageId)
-      return page !== undefined && !isRestoredClientHostedBrowserPlacement(page.placement)
+      const observed = inventoryByPageId.get(browserPageId)
+      return (
+        page !== undefined &&
+        !isRestoredClientHostedBrowserPlacement(page.placement) &&
+        !(
+          observed &&
+          (observed.state !== 'active' || observed.currentUrl === undefined) &&
+          page.pairedDeviceId === options.lease.pairedDeviceId &&
+          page.workspaceId === observed.workspaceId &&
+          page.browserProfileId === observed.browserProfileId &&
+          page.placement.pageHostGeneration === observed.pageHostGeneration &&
+          page.placement.browserHostClientId === observed.browserHostClientId &&
+          page.placement.browserHostGeneration === observed.browserHostGeneration
+        )
+      )
     }
   })
   if (adoptable.length === 0) {
     return NOTHING_TO_ADOPT
   }
+  if (options.lease.hostCapabilities.includes(BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY)) {
+    return admitModernAdoptions(options, adoptable)
+  }
+  const captured = new Map(
+    adoptable.map((page) => [page.browserPageId, options.pages.getPage(page.browserPageId)])
+  )
   const executionHostKeyByWorkspaceId = new Map<string, string>()
   const goneWorkspaceIds = new Set<string>()
   for (const workspaceId of new Set(adoptable.map((page) => page.workspaceId))) {
@@ -93,7 +141,10 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
       browserHostClientId: options.lease.browserHostClientId,
       browserHostGeneration: options.lease.browserHostGeneration
     },
-    executionHostKeyByWorkspaceId
+    executionHostKeyByWorkspaceId,
+    savedUrlByPageId: new Map(
+      [...captured].flatMap(([id, page]) => (page ? [[id, page.url] as const] : []))
+    )
   })
   if (intents.length === 0) {
     return { adoptedPageIds: [], unadoptedPageIds: settle(adoptable) }
@@ -123,6 +174,13 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
     }
     try {
       const restored = options.pages.getPage(browserPageId)
+      const expected = captured.get(browserPageId)
+      if (
+        expected &&
+        (!restored || !sameRuntimeBrowserPlacement(restored.placement, expected.placement))
+      ) {
+        continue
+      }
       if (restored && isRestoredClientHostedBrowserPlacement(restored.placement)) {
         // Retire before replacing from host inventory: publishing over a live id is refused.
         options.pages.retirePage(browserPageId, restored.placement)
@@ -134,7 +192,7 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
         executionHostKey: intent.executionHostKey,
         placement,
         pairedDeviceId: options.lease.pairedDeviceId,
-        url: adoptedPageUrl(page),
+        url: intent.url ?? adoptedPageUrl(page),
         loading: false,
         // Leave focus to client activation reports; adopting active would deactivate a visible sibling.
         active: false
@@ -160,4 +218,70 @@ export async function adoptRuntimeBrowserClientPagesFromInventory(
 
 function adoptedPageUrl(page: BrowserClientHostedPageInventory): string {
   return page.currentUrl ?? 'about:blank'
+}
+
+function admitModernAdoptions(
+  options: RuntimeBrowserClientPageAdoptionOptions,
+  candidates: readonly AdoptableClientHostedPage[]
+): RuntimeBrowserClientPageAdoptionResult {
+  const remaining = new Set(candidates.map((page) => page.browserPageId))
+  const published: string[] = []
+  const ordered = [...candidates].sort((a, b) => a.pageHostGeneration - b.pageHostGeneration)
+  const highest = ordered.reduce((value, page) => Math.max(value, page.pageHostGeneration), 0)
+  for (const [index, inventory] of ordered.entries()) {
+    if (options.signal?.aborted) {
+      continue
+    }
+    let page = options.pages.getPage(inventory.browserPageId)
+    if (!page) {
+      page = options.pages.publishClientPage({
+        browserPageId: inventory.browserPageId,
+        workspaceId: inventory.workspaceId,
+        browserProfileId: inventory.browserProfileId,
+        pairedDeviceId: options.lease.pairedDeviceId,
+        placement: RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT,
+        executionHostKey: RESTORED_CLIENT_HOSTED_EXECUTION_HOST_KEY,
+        // No saved owner exists for an imported URL omitted by an older client.
+        url: inventory.currentUrl ?? 'about:blank',
+        loading: false,
+        active: false
+      })
+      options.notifyWorkspace(page.workspaceId)
+    }
+    try {
+      admitRuntimeBrowserPageInitialization({
+        ...options,
+        page,
+        previous: inventory,
+        pageHostGeneration: highest + index + 1,
+        url: inventory.currentUrl ?? page.url,
+        creationTimeoutMs: 15_000,
+        releaseUnrecoverablePage: (held) => {
+          if (options.pages.retirePage(held.browserPageId, held.placement)) {
+            options.notifyWorkspace(held.workspaceId)
+          }
+        },
+        settled: (outcome) => {
+          if (options.signal?.aborted) {
+            return
+          }
+          if (outcome === 'published') {
+            published.push(inventory.browserPageId)
+          }
+          if (outcome === 'published' || !options.pages.getPage(inventory.browserPageId)) {
+            remaining.delete(inventory.browserPageId)
+          }
+          if (remaining.size === 0) {
+            options.onReconciled?.()
+          }
+        }
+      })
+    } catch (error) {
+      console.warn('[browser-host-lease] client page initialization admission failed:', {
+        browserPageId: inventory.browserPageId,
+        error
+      })
+    }
+  }
+  return { adoptedPageIds: published, unadoptedPageIds: [...remaining] }
 }

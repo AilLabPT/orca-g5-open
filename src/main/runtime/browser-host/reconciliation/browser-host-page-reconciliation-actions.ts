@@ -116,9 +116,10 @@ export class BrowserHostPageReconciliationActions {
     intent: BrowserHostRuntimePageIntent,
     signal: AbortSignal
   ): Promise<void> {
-    const url = this.plan.closeThenRestore.find(
-      (pair) => pair.intent.browserPageId === intent.browserPageId
-    )?.page.currentUrl
+    const url =
+      intent.url ??
+      this.plan.closeThenRestore.find((pair) => pair.intent.browserPageId === intent.browserPageId)
+        ?.page.currentUrl
     await this.issueCommand(
       intent.browserPageId,
       intent.pageHostGeneration,
@@ -127,7 +128,7 @@ export class BrowserHostPageReconciliationActions {
         browserProfileId: intent.browserProfileId,
         ...browserHostClientProfileFor(this.state.lease, intent.browserProfileId),
         executionHostKey: intent.executionHostKey,
-        ...(url ? { url } : {}),
+        ...(url === undefined ? {} : { url }),
         ...(intent.workspaceId ? { workspaceId: intent.workspaceId } : {})
       },
       signal

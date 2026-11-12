@@ -1,20 +1,27 @@
+import type { BrowserHostLeaseRegistryOptions } from './browser-host-lease-registry-options'
+import {
+  createBrowserHostPageInitializations,
+  type BrowserHostPageInitializations,
+  type BrowserHostPageInitializationInput
+} from '../client-pages/browser-host-page-initialization'
 import { switchBrowserHostClientProfile } from '../profiles/browser-host-client-profile-switch'
 import { randomUUID } from 'node:crypto'
 import type { BrowserClientHostCommandEvent } from '../../../../shared/browser/client-hosting/browser-client-host-protocol'
-import type { BrowserClientAutomationResult as BrowserClientHostCommandResult } from '../../../../shared/browser/client-hosting/browser-client-automation-protocol'
 import type { BrowserHostCommandResultParams } from '../commands/browser-host-command-state'
-import {
-  assertBrowserHostLeaseAdmission,
-  requireBrowserHostCommandResultLedger,
-  type BrowserHostCommandResultIdentity,
-  type BrowserHostLease,
-  type BrowserHostLeaseHandle,
-  type BrowserHostLeaseIdentity,
-  type BrowserHostLeaseState,
-  type BrowserTunnelLeaseHandle
+import type {
+  BrowserHostCommandResultIdentity,
+  BrowserHostLease,
+  BrowserHostLeaseHandle,
+  BrowserHostLeaseIdentity,
+  BrowserHostLeaseState,
+  BrowserTunnelLeaseHandle
 } from './browser-host-lease-records'
 import { BrowserHostGenerationCounter } from './browser-host-generation-counter'
-import { issueBrowserHostClientPageCommand } from '../commands/browser-host-client-page-command-issue'
+import {
+  issueBrowserHostClientPageCommand,
+  attachBrowserHostClientCommandDelivery,
+  settleBrowserHostClientPageCommand
+} from '../commands/browser-host-client-page-command-issue'
 import {
   BrowserHostPagePlacementRegistry,
   type BrowserClientPageAuthority,
@@ -27,25 +34,29 @@ import type {
 import { requireLiveBrowserClientPage } from '../reconciliation/browser-host-page-authority'
 import type { BrowserHostFenceReason } from './browser-host-lease-fence'
 import { dispatchBrowserHostLeaseFence } from './browser-host-lease-fence-dispatch'
-import { selectBrowserHostLease } from './browser-host-capability-selection'
+import { selectActiveBrowserHostLease } from './browser-host-capability-selection'
 import {
   createBrowserHostClientPage,
   type BrowserClientPageExecutionHostGrant,
   type BrowserHostClientPageCreateOptions
 } from '../client-pages/browser-host-client-page-creation'
-import { adoptBrowserHostClientPages } from '../client-pages/browser-host-client-page-adoption'
-import { snapshotBrowserHostPageInventory } from '../reconciliation/browser-host-page-inventory-snapshot'
+import {
+  adoptBrowserHostClientPages,
+  type BrowserHostClientPageAdoptionOptions
+} from '../client-pages/browser-host-client-page-adoption'
 import { BrowserHostPageReconciliationOrchestrator } from '../reconciliation/browser-host-page-reconciliation-orchestration'
 import type { BrowserHostRuntimePageIntent } from '../reconciliation/browser-host-page-reconciliation-plan'
 import { BrowserHostLeaseReconnectController } from './browser-host-lease-reconnect'
 import {
-  assertBrowserHostReconnectNegotiation,
-  createBrowserHostLeaseState,
+  attachBrowserHostLease,
   type BrowserHostLeaseAttachInput
 } from './browser-host-lease-attachment'
 import { BrowserHostTunnelRegistry } from './browser-host-tunnel-registry'
 import { requireBrowserHostLeaseState } from './browser-host-lease-state-resolution'
-import { requireBrowserClientPageConnection } from '../client-pages/browser-host-client-page-connection'
+import {
+  requireBrowserClientPageConnection,
+  type BrowserClientPageConnectionInput
+} from '../client-pages/browser-host-client-page-connection'
 import { completeBrowserHostPageRetirement } from '../reconciliation/browser-host-page-retirement-completion'
 import { placeBrowserHostClientPage } from '../client-pages/browser-host-client-page-placement'
 
@@ -59,27 +70,25 @@ export class BrowserHostLeaseRegistry {
     string,
     BrowserClientPageExecutionHostGrant
   >()
+  private readonly initializations: BrowserHostPageInitializations
   private readonly pagePlacements: BrowserHostPagePlacementRegistry
   private readonly pageReconciliations: BrowserHostPageReconciliationOrchestrator
   private readonly reconnects: BrowserHostLeaseReconnectController
 
-  constructor(
-    private readonly options: {
-      authorityRuntimeId: string
-      authorityEpoch?: string
-      reconnectGraceMs?: number
-      /** Release staged per-page state even after transport loss; an optional generation scopes cleanup. */
-      onClientPageReleased?: (browserPageId: string, pageHostGeneration?: number) => void
-      /** Retain fenced page records for recovery when the same host identity returns. */
-      onClientPageFenced?: (browserPageId: string, placement: RuntimeBrowserClientPlacement) => void
-    }
-  ) {
+  constructor(private readonly options: BrowserHostLeaseRegistryOptions) {
     this.authorityRuntimeId = options.authorityRuntimeId
     this.authorityEpoch = options.authorityEpoch ?? randomUUID()
     this.pagePlacements = new BrowserHostPagePlacementRegistry({
       authorityRuntimeId: this.authorityRuntimeId,
       authorityEpoch: this.authorityEpoch
     })
+    this.initializations = createBrowserHostPageInitializations(
+      this.pagePlacements,
+      this.clientPageExecutionHostGrants,
+      (id, placement) =>
+        this.completePageRetirement(this.pagePlacements.beginPageRetirement(id, placement)),
+      (lease) => this.requireLeaseState(lease)
+    )
     this.pageReconciliations = new BrowserHostPageReconciliationOrchestrator(
       this,
       this.pagePlacements
@@ -87,46 +96,30 @@ export class BrowserHostLeaseRegistry {
     this.reconnects = new BrowserHostLeaseReconnectController({
       graceMs: options.reconnectGraceMs ?? 15_000,
       leasesByClientId: this.leasesByClientId,
-      fenceReconciliation: (state) => this.pageReconciliations.fence(state),
+      fenceReconciliation: (state) => this.fenceReconciliation(state),
       fenceLease: (state, reason) => this.fenceLease(state, reason),
       fenceRoute: (state, reason) => this.tunnels.fence(state, reason)
     })
   }
 
   attach(input: BrowserHostLeaseAttachInput): BrowserHostLeaseHandle {
-    const pageInventory = snapshotBrowserHostPageInventory(input)
-    assertBrowserHostReconnectNegotiation(input)
-    const existing = this.leasesByClientId.get(input.browserHostClientId)
-    if (existing && existing.lease.pairedDeviceId !== input.pairedDeviceId) {
-      throw new Error('browser_host_identity_conflict')
-    }
-    assertBrowserHostLeaseAdmission(this.leasesByClientId.values(), input, existing)
-    const restored = existing ? this.reconnects.restore(existing, input, pageInventory) : undefined
-    if (restored && existing) {
-      this.pageReconciliations.observeInventory(existing)
-      return restored
-    }
-    const generation = this.generations.take('host')
-    if (existing) {
-      this.fenceLease(existing, 'replaced')
-    }
-    const state = createBrowserHostLeaseState({
+    return attachBrowserHostLease(input, {
       authorityRuntimeId: this.authorityRuntimeId,
       authorityEpoch: this.authorityEpoch,
-      generation,
-      input,
-      pageInventory
+      leasesByClientId: this.leasesByClientId,
+      reconnects: this.reconnects,
+      generations: this.generations,
+      observeInventory: (state) => this.pageReconciliations.observeInventory(state),
+      fenceLease: (state) => this.fenceLease(state, 'replaced')
     })
-    this.leasesByClientId.set(input.browserHostClientId, state)
-    return this.reconnects.createHandle(state)
   }
 
   select(
     browserHostClientId?: string,
     requiredCapabilities: readonly string[] = []
   ): BrowserHostLease {
-    return selectBrowserHostLease(
-      new Map([...this.leasesByClientId].filter(([, state]) => state.status === 'active')),
+    return selectActiveBrowserHostLease(
+      this.leasesByClientId,
       browserHostClientId,
       requiredCapabilities
     )
@@ -136,14 +129,7 @@ export class BrowserHostLeaseRegistry {
     return this.requireLeaseState(identity).lease
   }
 
-  requireClientPageConnection(input: {
-    browserPageId: string
-    placement: RuntimeBrowserClientPlacement
-    pairedDeviceId: string
-    connectionId: string
-    /** File transfers only: a staged profile-switch guest downloads before its generation commits. */
-    admitPendingProfileSwitch?: boolean
-  }): RuntimeBrowserClientPlacement {
+  requireClientPageConnection(input: BrowserClientPageConnectionInput) {
     return requireBrowserClientPageConnection(input, {
       authorityRuntimeId: this.authorityRuntimeId,
       authorityEpoch: this.authorityEpoch,
@@ -205,11 +191,30 @@ export class BrowserHostLeaseRegistry {
     })
   }
 
+  hasClientPageInitialization(browserPageId: string): boolean {
+    return this.initializations.has(browserPageId)
+  }
+
+  admitClientPageInitialization(
+    identity: BrowserHostLeaseIdentity,
+    input: BrowserHostPageInitializationInput
+  ): boolean {
+    const state = this.requireLeaseState(identity)
+    return this.initializations.admit(state, input)
+  }
+
+  cancelClientPageInitialization(
+    browserPageId: string,
+    expected: RuntimeBrowserClientPlacement
+  ): boolean {
+    return this.initializations.cancel(browserPageId, expected)
+  }
+
   switchClientPageProfile(
     authority: BrowserClientPageAuthority,
     profile: Parameters<typeof switchBrowserHostClientProfile>[1],
     onLateCommit?: (placement: RuntimeBrowserClientPlacement) => void
-  ): Promise<RuntimeBrowserClientPlacement> {
+  ) {
     return switchBrowserHostClientProfile(authority, profile, {
       onLateCommit,
       registry: this,
@@ -227,7 +232,7 @@ export class BrowserHostLeaseRegistry {
   adoptClientPages(
     identity: BrowserHostLeaseIdentity,
     intents: readonly BrowserHostRuntimePageIntent[],
-    options: { maxConcurrency?: number; actionTimeoutMs?: number; signal?: AbortSignal } = {}
+    options: BrowserHostClientPageAdoptionOptions = {}
   ): Promise<readonly string[]> {
     return adoptBrowserHostClientPages(intents, options, {
       state: this.requireLeaseState(identity),
@@ -241,20 +246,13 @@ export class BrowserHostLeaseRegistry {
     identity: BrowserHostLeaseIdentity,
     delivery: (event: BrowserClientHostCommandEvent) => void
   ): () => void {
-    const ledger = this.requireLeaseState(identity).commandLedger
-    if (!ledger) {
-      throw new Error('browser_host_command_protocol_required')
-    }
-    return ledger.attach(delivery)
+    return attachBrowserHostClientCommandDelivery(this.requireLeaseState(identity), delivery)
   }
 
   issueClientPageCommand(
     authority: BrowserClientPageAuthority,
     command: BrowserClientHostCommandEvent['command']
-  ): {
-    event: BrowserClientHostCommandEvent
-    result: Promise<BrowserClientHostCommandResult>
-  } {
+  ): ReturnType<typeof issueBrowserHostClientPageCommand> {
     this.requireClientPage(authority)
     return issueBrowserHostClientPageCommand(authority, command, this.leasesByClientId)
   }
@@ -263,12 +261,12 @@ export class BrowserHostLeaseRegistry {
     identity: BrowserHostCommandResultIdentity,
     params: BrowserHostCommandResultParams
   ): boolean {
-    const state = this.requireLeaseState(identity)
-    const ledger = requireBrowserHostCommandResultLedger(state, identity)
-    if (!ledger.isUnplacedPageResult(params)) {
-      this.requireClientPage(params)
-    }
-    return ledger.settle(params)
+    return settleBrowserHostClientPageCommand(
+      this.requireLeaseState(identity),
+      identity,
+      params,
+      (authority) => this.requireClientPage(authority)
+    )
   }
 
   getPlacement(browserPageId: string): RuntimeBrowserPlacement | undefined {
@@ -282,10 +280,7 @@ export class BrowserHostLeaseRegistry {
       : undefined
   }
 
-  beginPageRetirement(
-    browserPageId: string,
-    expected: RuntimeBrowserPlacement
-  ): BrowserPageRetirement {
+  beginPageRetirement(browserPageId: string, expected: RuntimeBrowserPlacement) {
     return this.pagePlacements.beginPageRetirement(browserPageId, expected)
   }
 
@@ -314,10 +309,15 @@ export class BrowserHostLeaseRegistry {
       leasesByClientId: this.leasesByClientId,
       pagePlacements: this.pagePlacements,
       clearReconnect: (fenced) => this.reconnects.clear(fenced),
-      fenceReconciliation: (fenced) => this.pageReconciliations.fence(fenced),
+      fenceReconciliation: (state) => this.fenceReconciliation(state),
       fenceRoute: (route, routeReason) => this.tunnels.fence(route, routeReason),
       releaseFencedPage: (retirement) => this.releaseFencedClientPage(retirement)
     })
+  }
+
+  private fenceReconciliation(state: BrowserHostLeaseState): void {
+    this.initializations.fence(state)
+    this.pageReconciliations.fence(state)
   }
 
   private releaseFencedClientPage(retirement: BrowserPageRetirement): void {

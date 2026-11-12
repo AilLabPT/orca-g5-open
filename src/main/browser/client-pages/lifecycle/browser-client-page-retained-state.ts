@@ -18,7 +18,7 @@ export type BrowserClientPageLifecycleRegistry = Pick<
   | 'beginGuestRetirement'
 > &
   Partial<Pick<BrowserRouteWebContentsRegistry, 'rekeyGuestLifecycle' | 'watchPageAvailability'>> &
-  Partial<Pick<BrowserRouteWebContentsRegistry, 'grantReconciledNavigation'>>
+  Partial<Pick<BrowserRouteWebContentsRegistry, 'grantReconciledNavigation' | 'initializeGuest'>>
 
 export type BrowserClientRetainedPage = {
   generation: number

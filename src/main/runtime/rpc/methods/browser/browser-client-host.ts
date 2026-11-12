@@ -80,6 +80,10 @@ export const BROWSER_CLIENT_HOST_METHODS = [
         resolveDisconnected()
       }
       const subscriptionId = `browser-client-host:${params.browserHostClientId}`
+      const initializationLifetime = new AbortController()
+      const initializationSignal = signal
+        ? AbortSignal.any([signal, initializationLifetime.signal])
+        : initializationLifetime.signal
       try {
         runtime.registerSubscriptionCleanup(subscriptionId, cleanup, connectionId)
         signal?.addEventListener('abort', cleanup, { once: true })
@@ -121,12 +125,17 @@ export const BROWSER_CLIENT_HOST_METHODS = [
         // Adopt surviving client guests before recovery, which only reconciles records the runtime already knows.
         const adoption = await adoptRuntimeBrowserClientPagesFromInventory({
           lease: handle.lease,
+          onReconciled: () => {
+            if (!initializationSignal.aborted) {
+              runtime.markClientHostedPagesReconciled(pairedDeviceId)
+            }
+          },
           authority: registry,
           pages: getRuntimeBrowserPageRegistry(runtime),
           notifyWorkspace: (workspaceId) => runtime.notifyMobileSessionTabsChanged(workspaceId),
           resolveExecutionHostKey: (workspaceId) =>
             runtime.resolveBrowserExecutionHostKeyForWorkspace(workspaceId),
-          ...(signal ? { signal } : {})
+          signal: initializationSignal
         })
         if (adoption.unadoptedPageIds.length === 0) {
           // Clear reconciliation hold only after every live guest has a record; otherwise retain it until later attach or window deadline.
@@ -143,7 +152,7 @@ export const BROWSER_CLIENT_HOST_METHODS = [
           resolveExecutionHostKey: (workspaceId) =>
             runtime.resolveBrowserExecutionHostKeyForWorkspace(workspaceId),
           adoptedPageIds: new Set(adoption.adoptedPageIds),
-          ...(signal ? { signal } : {})
+          signal: initializationSignal
         })
         const reason = await Promise.race([
           handle.whenFenced,
@@ -160,6 +169,7 @@ export const BROWSER_CLIENT_HOST_METHODS = [
           reason: reason === 'replaced' ? 'replaced' : 'released'
         })
       } finally {
+        initializationLifetime.abort()
         signal?.removeEventListener('abort', cleanup)
         cleanup()
       }
