@@ -108,6 +108,7 @@ function harness(options: { pairedDeviceId?: string } = {}) {
   const authority = {
     canContinueClientPageInitialization: () => false,
     admitClientPageInitialization: () => 'stale' as const,
+    cancelClientPageInitialization: () => false,
     authorityRuntimeId: 'runtime-new',
     authorityEpoch: 'epoch-new',
     getPlacement: vi.fn((browserPageId: string) => placements.get(browserPageId)),

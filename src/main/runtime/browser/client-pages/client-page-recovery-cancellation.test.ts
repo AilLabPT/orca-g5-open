@@ -1,3 +1,4 @@
+import { BrowserHostCommandLedger } from '../../browser-host/commands/browser-host-command-ledger'
 import { expect, it, vi } from 'vitest'
 import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
 import { retireRuntimeBrowserClientPage } from './browser-client-page-close'
@@ -112,3 +113,49 @@ it.each([false, true])(
     }
   }
 )
+
+it('a real ledger rejection before admission creates no native cleanup obligation', async () => {
+  const h = createRecoveryLoop(['slow'])
+  const rejected = Promise.withResolvers<void>()
+  const issue = BrowserHostCommandLedger.prototype.issue
+  let admissions = 0
+  let rejectFirst = true
+  const observed = vi
+    .spyOn(BrowserHostCommandLedger.prototype, 'issue')
+    .mockImplementation(function (this: BrowserHostCommandLedger, input, onAdmitted) {
+      if (rejectFirst && input.command.type === 'createPage') {
+        rejectFirst = false
+        this.detachDelivery()
+        try {
+          return issue.call(this, input, () => {
+            admissions += 1
+            onAdmitted?.()
+          })
+        } catch (error) {
+          rejected.resolve()
+          throw error
+        }
+      }
+      return issue.call(this, input, onAdmitted)
+    })
+  try {
+    const first = h.attach()
+    await rejected.promise
+    expect(admissions).toBe(0)
+    expect(h.commands).toEqual([])
+    expect(h.executor.snapshotPageInventory()).toEqual([])
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    first.abort()
+    await first.completion
+    const next = h.attach()
+    await h.published('slow')
+    expect(h.commands.filter((event) => event.command.type === 'closePage')).toEqual([])
+    expect(h.authority.getClientPageExecutionHostKey('slow')).toBe('execution-host-a')
+    expect(h.executor.snapshotPageInventory()).toHaveLength(1)
+    next.abort()
+    await next.completion
+  } finally {
+    observed.mockRestore()
+    await h.close()
+  }
+})

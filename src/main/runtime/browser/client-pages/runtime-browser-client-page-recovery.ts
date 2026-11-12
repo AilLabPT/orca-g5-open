@@ -36,6 +36,7 @@ type RecoveryAuthority = Pick<
   | 'createClientPage'
   | 'getPlacement'
   | 'canContinueClientPageInitialization'
+  | 'cancelClientPageInitialization'
   | 'admitClientPageInitialization'
 > & {
   issueClientPageCommand(
@@ -210,6 +211,7 @@ async function recoverPage(
     placement,
     executionHostKey
   )
+  options.authority.cancelClientPageInitialization(page.browserPageId, page.placement)
   const url = inventory?.currentUrl ?? page.url
   if (url && url !== 'about:blank') {
     await navigateRecoveredPage(options.authority, page.browserPageId, placement, url)

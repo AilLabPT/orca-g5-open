@@ -147,6 +147,7 @@ export class BrowserHostPageInitializations {
       return false
     }
     if (record.authorityRetired && !record.operation && !record.successor) {
+      this.completion.settle(record, 'disposed')
       this.records.delete(id)
       return true
     }

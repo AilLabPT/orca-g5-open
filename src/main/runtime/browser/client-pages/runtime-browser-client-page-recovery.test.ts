@@ -106,6 +106,7 @@ function harness(
   const authority = {
     canContinueClientPageInitialization: () => false,
     admitClientPageInitialization: () => 'stale' as const,
+    cancelClientPageInitialization: () => false,
     authorityRuntimeId: 'runtime-a',
     authorityEpoch: 'epoch-a',
     getPlacement: vi.fn((browserPageId: string) => placements.get(browserPageId)),

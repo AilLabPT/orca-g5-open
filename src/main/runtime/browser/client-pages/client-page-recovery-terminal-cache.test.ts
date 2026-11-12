@@ -52,3 +52,80 @@ it('keeps an admitted exact close across earlier creation-result eviction', asyn
     await h.close()
   }
 })
+
+it('rejects a genuine missing native page after its bootstrap results were evicted', async () => {
+  const ids = ['missing', 'a', 'b', 'c', 'd', 'e', 'f']
+  const h = createRecoveryLoop(ids, { maxCachedCommandResults: 6 })
+  try {
+    const attached = h.attach()
+    await Promise.all(ids.map((id) => h.published(id)))
+    const page = h.pages.getPage('missing')!
+    expect(await h.executor.retirePage('missing', page.placement.pageHostGeneration)).toBe(true)
+    const identity = {
+      authorityRuntimeId: h.authority.authorityRuntimeId,
+      authorityEpoch: h.authority.authorityEpoch,
+      browserPageId: 'missing',
+      ...page.placement
+    }
+    const close = h.authority.issueClientPageCommand(identity, {
+      type: 'closePage',
+      targetAuthority: identity
+    })
+    expect(await close.result).toMatchObject({ status: 'failed' })
+    expect(
+      h.executor.snapshotPageInventory().some((page) => page.browserPageId === 'missing')
+    ).toBe(false)
+    attached.abort()
+    await attached.completion
+  } finally {
+    await h.close()
+  }
+})
+
+it('cancels an admitted queued close on dispatcher teardown without claiming native cleanup', async () => {
+  const h = createRecoveryLoop(['slow', 'fast'], {
+    maxCachedCommandResults: 6,
+    maxConcurrentHandlers: 1
+  })
+  try {
+    const navigating = h.hold('slow')
+    const attached = h.attach()
+    await navigating
+    const retirement = h.holdRetirement('slow')
+    await retireRuntimeBrowserClientPage(
+      {
+        getBrowserHostLeaseRegistry: () => h.authority,
+        notifyHeadlessBrowserSessionTabsChanged: (id) =>
+          h.hostRuntime.notifyMobileSessionTabsChanged(id),
+        getRuntimeBrowserPageRegistry: () => h.pages,
+        resolveBrowserWorkspace: async () => ({ id: 'workspace' })
+      },
+      h.pages.getPage('slow')!
+    )
+    await retirement.started
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const closing = h.closeClientDispatcher()
+    await vi.advanceTimersByTimeAsync(5001)
+    await closing
+    expect(
+      h.results.findLast((result) => result.id === 'slow' && result.type === 'closePage')
+    ).toMatchObject({ status: 'failed' })
+    expect(h.executor.snapshotPageInventory().some((page) => page.browserPageId === 'slow')).toBe(
+      true
+    )
+    expect(h.pages.getPage('slow')).toBeUndefined()
+    expect(() => h.authority.select('client-a')).toThrow('browser_host_unavailable')
+    expect(h.authority.getClientPageExecutionHostKey('slow')).toBeUndefined()
+    retirement.release()
+    await vi.waitFor(() =>
+      expect(h.executor.snapshotPageInventory().some((page) => page.browserPageId === 'slow')).toBe(
+        false
+      )
+    )
+    attached.abort()
+    await attached.completion
+  } finally {
+    vi.useRealTimers()
+    await h.close()
+  }
+})

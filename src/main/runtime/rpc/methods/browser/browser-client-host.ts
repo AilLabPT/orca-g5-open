@@ -10,6 +10,7 @@ import {
 } from '../../../../../shared/browser/client-hosting/browser-client-host-request-protocol'
 import {
   BROWSER_CLIENT_HOST_AUTHORITY_MISMATCH_CODE,
+  BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY,
   BrowserClientHostAttachParams,
   BrowserClientHostCommandResultParams
 } from '../../../../../shared/browser/client-hosting/browser-client-host-protocol'
@@ -135,6 +136,15 @@ export const BROWSER_CLIENT_HOST_METHODS = [
             runtime.resolveBrowserExecutionHostKeyForWorkspace(workspaceId),
           signal: initializationSignal
         })
+        const modern = handle.lease.hostCapabilities?.includes(
+          BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY
+        )
+        if (!modern) {
+          registry.sealClientPageInitializations(
+            handle.lease,
+            adoption.unadoptedPageIds.length !== 0
+          )
+        }
         await recoverUnavailableRuntimeBrowserClientPages({
           lease: handle.lease,
           authority: registry,
@@ -149,11 +159,13 @@ export const BROWSER_CLIENT_HOST_METHODS = [
           claimedPageIds: new Set(adoption.claimedPageIds),
           signal: initializationSignal
         })
-        const claimed = new Set(adoption.claimedPageIds)
-        registry.sealClientPageInitializations(
-          handle.lease,
-          adoption.unadoptedPageIds.some((id) => !claimed.has(id))
-        )
+        if (modern) {
+          const claimed = new Set(adoption.claimedPageIds)
+          registry.sealClientPageInitializations(
+            handle.lease,
+            adoption.unadoptedPageIds.some((id) => !claimed.has(id))
+          )
+        }
         const reason = await Promise.race([
           handle.whenFenced,
           whenDisconnected.then(() => undefined),

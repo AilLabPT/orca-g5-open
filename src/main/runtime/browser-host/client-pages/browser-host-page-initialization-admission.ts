@@ -42,16 +42,17 @@ export function admitInitialization(
   if (record && record.pairedDeviceId !== state.lease.pairedDeviceId) {
     return 'stale'
   }
-  if (record) {
-    owner.join(state, record)
-  }
   if (record?.closed) {
+    owner.join(state, record)
     record.observer = owner.observer(state, input)
     owner.resume(state)
     return 'closed'
   }
   if (record && !sameInitializationPlacement(record.expected, input.expected)) {
     return 'stale'
+  }
+  if (record) {
+    owner.join(state, record)
   }
   const operation = record?.operation
   if (

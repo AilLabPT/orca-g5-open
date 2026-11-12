@@ -1,3 +1,4 @@
+import { BROWSER_CLIENT_AUTOMATION_HOST_CAPABILITY } from '../../../../shared/browser/client-hosting/browser-client-automation-protocol'
 import { OrcaRuntimeService } from '../../orca-runtime'
 import type { RuntimeMobileSessionTabsResult } from '../../../../shared/runtime-session-contracts'
 import { createProfile } from './client-hosted-browser-persistence-test-harness'
@@ -21,7 +22,11 @@ import { RESTORED_CLIENT_HOSTED_BROWSER_PLACEMENT } from './client-hosted-browse
 
 export function createRecoveryLoop(
   ids: readonly string[],
-  loopOptions: { worktreeCount?: number; maxCachedCommandResults?: number } = {}
+  loopOptions: {
+    worktreeCount?: number
+    maxCachedCommandResults?: number
+    maxConcurrentHandlers?: number
+  } = {}
 ) {
   const cleanups = new Map<string, () => void>()
   const publications = new Map<string, ReturnType<typeof Promise.withResolvers<void>>>()
@@ -48,6 +53,9 @@ export function createRecoveryLoop(
   const profile = createProfile(loopOptions.worktreeCount)
   class RecoveryRuntime extends OrcaRuntimeService {
     projectedFrames = 0
+    sessionTabsSequence() {
+      return this.mobileSessionTabsChangeSequence
+    }
     protected override projectMobileSessionTabsForClient(
       result: RuntimeMobileSessionTabsResult,
       clientId?: string
@@ -82,15 +90,13 @@ export function createRecoveryLoop(
       super.notifyMobileSessionTabsChanged(id)
       notify()
     }
-    override registerSubscriptionCleanup = (
-      _id: string,
-      cleanup: () => void,
-      connection?: string
-    ): void => {
-      cleanups.set(connection ?? '', cleanup)
-    }
   }
   const hostRuntime = new RecoveryRuntime(profile.store, undefined, {})
+  const registerSubscription = hostRuntime.registerSubscriptionCleanup.bind(hostRuntime)
+  hostRuntime.registerSubscriptionCleanup = (id, cleanup, connection) => {
+    registerSubscription(id, cleanup, connection)
+    cleanups.set(connection ?? '', () => hostRuntime.cleanupSubscription(id))
+  }
   const pages = getRuntimeBrowserPageRegistry(hostRuntime)
   const authority = getBrowserHostLeaseRegistry(hostRuntime)
   const rpc = new RpcDispatcher({ runtime: hostRuntime, methods: BROWSER_CLIENT_HOST_METHODS })
@@ -145,7 +151,7 @@ export function createRecoveryLoop(
           browserHostClientId,
           hostCapabilities: [
             'webview',
-            'automation',
+            BROWSER_CLIENT_AUTOMATION_HOST_CAPABILITY,
             ...(options.modern === false ? [] : [BROWSER_CLIENT_PAGE_INITIALIZATION_CAPABILITY])
           ],
           pageCommandProtocolVersion: 1,
@@ -171,6 +177,7 @@ export function createRecoveryLoop(
             clientGeneration = event.browserHostGeneration
             client = new BrowserClientHostCommandDispatcher({
               maxCachedCommandResults: loopOptions.maxCachedCommandResults,
+              maxConcurrentHandlers: loopOptions.maxConcurrentHandlers,
               authority: { ...event, authorityRuntimeId: 'runtime-a', browserHostClientId },
               handler: (command, signal, close) => executor.handle(command, signal, close),
               acquireInitialization: (command) => executor.acquireInitialization(command)
@@ -268,6 +275,7 @@ export function createRecoveryLoop(
       })
       replacement.release()
     },
+    closeClientDispatcher: () => client?.close(),
     async restartClient() {
       await client?.close()
       await executor.close()

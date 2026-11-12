@@ -4,11 +4,17 @@ export abstract class RuntimeMobileSessionTabSubscriptions extends RuntimeWorksp
   onMobileSessionTabsChanged(
     listener: (snapshot: RuntimeMobileSessionTabsResult, changeSequence: number) => void,
     clientNavigationId?: string,
-    clientKind?: 'mobile' | 'runtime'
+    clientKind?: 'mobile' | 'runtime',
+    options?: { observation: 'caller' }
   ): () => void {
     // Drain coalesced notifications before subscribing: the initial snapshot already includes them.
     this.mobileSessionTabsNotifyCoalescer.flushAll()
-    const subscription = { listener, clientNavigationId, clientKind }
+    const subscription = {
+      listener,
+      clientNavigationId,
+      clientKind,
+      observation: options?.observation
+    }
     this.mobileSessionTabListeners.add(subscription)
     return () => {
       // Flush before removal so this listener receives the latest settled state.
@@ -28,11 +34,18 @@ export abstract class RuntimeMobileSessionTabSubscriptions extends RuntimeWorksp
     subscription: {
       listener(frame: RuntimeMobileSessionTabsResult, sequence: number): void
       clientNavigationId?: string
+      observation?: 'caller'
     },
     frame: RuntimeMobileSessionTabsResult,
     sequence: number
   ): void {
     subscription.listener(frame, sequence)
+    if (
+      subscription.observation === 'caller' ||
+      !this.mobileSessionTabListeners.has(subscription)
+    ) {
+      return
+    }
     this.clientHostedPageReconciliation.observe(
       [frame],
       subscription.clientNavigationId,
@@ -53,6 +66,15 @@ export abstract class RuntimeMobileSessionTabSubscriptions extends RuntimeWorksp
     observer: object
   ): void {
     this.clientHostedPageReconciliation.forgetObservation(clientNavigationId, observer)
+  }
+
+  protected hasMobileSessionTabsListenersForClient(clientNavigationId: string): boolean {
+    for (const subscription of this.mobileSessionTabListeners) {
+      if (subscription.clientNavigationId === clientNavigationId) {
+        return true
+      }
+    }
+    return false
   }
 
   protected hasAgentSenderListeners(): boolean {

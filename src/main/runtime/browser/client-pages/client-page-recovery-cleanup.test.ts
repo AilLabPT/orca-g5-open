@@ -1,3 +1,4 @@
+import { openRecoveryTabsStream } from './client-page-recovery-stream-test-harness'
 import { expect, it, vi } from 'vitest'
 import { createRecoveryLoop } from './client-page-recovery-loop-test-harness'
 import { retireRuntimeBrowserClientPage } from './browser-client-page-close'
@@ -65,6 +66,7 @@ it.each([false, true])(
   async (withFast) => {
     const h = createRecoveryLoop(['slow'])
     const firstDelivery = Promise.withResolvers<void>()
+    const stream = openRecoveryTabsStream(h.hostRuntime, `outstanding-${withFast}`)
     let held = false
     h.hooks.delivery = (event, dispatch) => {
       if (event.command.type === 'createPage' && !held) {
@@ -75,6 +77,11 @@ it.each([false, true])(
       dispatch()
     }
     try {
+      await stream.initial
+      expect(
+        stream.frames.findLast((frame) => frame.worktree === 'repo-1::/tmp/worktree-a')
+          ?.clientHostedPagesUnreconciled
+      ).toBe(true)
       await h.seedNative(['slow'])
       const navigation = h.hold('slow')
       const mount = h.holdMount('slow')
@@ -118,6 +125,15 @@ it.each([false, true])(
             .clientHostedPagesUnreconciled
         ).toBeUndefined()
       )
+      await vi.waitFor(() =>
+        expect(
+          stream.frames.findLast((frame) => frame.worktree === 'repo-1::/tmp/worktree-a')
+            ?.clientHostedPagesUnreconciled
+        ).toBeUndefined()
+      )
+      expect(stream.errors).toEqual([])
+      stream.stop()
+      await stream.completion
       expect(h.executor.snapshotPageInventory()).toHaveLength(withFast ? 2 : 1)
       expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
       expect(
@@ -129,6 +145,7 @@ it.each([false, true])(
       next.abort()
       await next.completion
     } finally {
+      stream.stop()
       await h.close()
     }
   }
@@ -156,6 +173,39 @@ it('an omitted inventory cannot certify a retired native target absent', async (
     unavailable.abort()
     next.abort()
     await Promise.all([unavailable.completion, next.completion])
+  } finally {
+    await h.close()
+  }
+})
+
+it('complete absence retires settled-create nonallocating work before replay', async () => {
+  const h = createRecoveryLoop(['slow'])
+  const pending = Promise.withResolvers<void>()
+  let heldCommand: string | undefined
+  h.hooks.delivery = (event, dispatch) => {
+    if (event.command.type === 'navigate' && !heldCommand) {
+      heldCommand = event.commandId
+      pending.resolve()
+      return
+    }
+    dispatch()
+  }
+  try {
+    const first = h.attach()
+    await pending.promise
+    expect(h.results).toContainEqual({ id: 'slow', type: 'createPage', status: 'completed' })
+    const inventory = h.executor.snapshotPageInventory()
+    expect(inventory).toHaveLength(1)
+    await h.executor.retirePage('slow', inventory[0]!.pageHostGeneration)
+    const next = h.attach({ inventory: [] })
+    await h.published('slow')
+    expect(h.commands.filter((event) => event.commandId === heldCommand)).toHaveLength(1)
+    expect(h.commands.filter((event) => event.command.type === 'createPage')).toHaveLength(2)
+    expect(h.executor.snapshotPageInventory()).toHaveLength(1)
+    expect(h.pages.getPage('slow')?.url).toBe('https://example.internal/slow')
+    first.abort()
+    next.abort()
+    await Promise.all([first.completion, next.completion])
   } finally {
     await h.close()
   }

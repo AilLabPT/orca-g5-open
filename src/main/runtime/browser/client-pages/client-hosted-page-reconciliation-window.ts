@@ -29,7 +29,7 @@ export class ClientHostedPageReconciliationWindow {
   }
 
   observe(
-    frames: readonly { worktree: string; clientHostedPagesUnreconciled?: true }[],
+    frames: readonly { worktree: string; clientHostedPagesUnreconciled?: true; removed?: true }[],
     pairedDeviceId?: string,
     observer: Observation = READ_REPLY
   ): void {
@@ -37,7 +37,7 @@ export class ClientHostedPageReconciliationWindow {
     const observations = this.observations.get(key) ?? new Map<Observation, Set<string>>()
     const held = observations.get(observer) ?? new Set<string>()
     for (const frame of frames) {
-      if (frame.clientHostedPagesUnreconciled) {
+      if (frame.clientHostedPagesUnreconciled && !frame.removed) {
         held.add(frame.worktree)
       } else {
         held.delete(frame.worktree)
