@@ -141,6 +141,10 @@ it.each([
       release()
       if (unknown) {
         h.attach()
+        await vi.waitFor(() => {
+          expect(h.errors).toEqual([])
+          expect(h.results).toContainEqual({ type: 'closePage', id: 'slow', status: 'completed' })
+        })
       }
       await h.published('slow')
       await Promise.all(calls)

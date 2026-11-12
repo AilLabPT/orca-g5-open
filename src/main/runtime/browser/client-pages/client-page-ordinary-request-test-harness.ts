@@ -7,6 +7,10 @@ import { orcadClientPageCommand } from '../../../orcad/orcad-client-page-command
 import type { RuntimeBrowserCommandHost } from '../commands/browser-command-contracts'
 
 export function ordinaryPageRpc(h: ReturnType<typeof createRecoveryLoop>, remote = false) {
+  h.native.dependencies.retainNetworkRoute.mockImplementation(async (key) => ({
+    ...h.native.route,
+    key
+  }))
   const host: RuntimeBrowserCommandHost = {
     getRuntimeId: () => 'runtime-a',
     resolveWorkspaceSelector: async () => ({ id: 'repo-1::/tmp/worktree-a' }),
