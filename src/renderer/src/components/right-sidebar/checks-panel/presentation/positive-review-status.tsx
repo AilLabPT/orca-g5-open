@@ -136,7 +136,8 @@ export function ChecksPanelPositiveReview({
       manualRetryInFlight,
       refresh: refresh ?? (manualRefreshFailed ? { status: 'error' } : undefined),
       now,
-      formatTime: (at) => new Date(at).toLocaleTimeString(intlLocale)
+      formatTime: (at) =>
+        new Date(at).toLocaleTimeString(intlLocale, { hour: 'numeric', minute: '2-digit' })
     },
     t
   )
