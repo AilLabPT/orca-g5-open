@@ -2,7 +2,6 @@ import { useEffect } from 'react'
 import { useAppStore } from '@/store'
 import { isGitHubPRSuppressed } from '../../../../../../shared/worktree/github-pr-suppression'
 import {
-  prDetailRecoveryContextKey,
   prDetailRecoverySelectionRevision,
   type PRDetailRecoveryContext
 } from '@/store/github/pull-requests/pr-detail-recovery-context'
@@ -64,10 +63,44 @@ export function useChecksPanelPRDetailRecovery(model: Model): void {
     return () => notePanelVisible(false)
   }, [notePanelVisible])
   const context = recoveryContext(model)
-  const contextKey = context ? prDetailRecoveryContextKey(context) : null
+  // Primitive deps: the context object is rebuilt each render, its fields are what the store submits.
+  const eligible = context !== null
+  const worktreeId = context?.worktreeId ?? ''
+  const repoId = context?.repoId ?? ''
+  const repoPath = context?.repoPath ?? ''
+  const branch = context?.branch ?? ''
+  const headOid = context?.headOid ?? null
+  const linkedPRNumber = context?.linkedPRNumber ?? null
+  const hintPRNumber = context?.hintPRNumber ?? null
+  const hostedReviewCacheKey = context?.hostedReviewCacheKey ?? ''
+  const selectionRevision = context?.selectionRevision ?? ''
   useEffect(() => {
-    reconcile(context)
-    // The key captures every field the store submits; context identity changes each render.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contextKey, reconcile])
+    reconcile(
+      eligible
+        ? {
+            worktreeId,
+            repoId,
+            repoPath,
+            branch,
+            headOid,
+            linkedPRNumber,
+            hintPRNumber,
+            hostedReviewCacheKey,
+            selectionRevision
+          }
+        : null
+    )
+  }, [
+    eligible,
+    worktreeId,
+    repoId,
+    repoPath,
+    branch,
+    headOid,
+    linkedPRNumber,
+    hintPRNumber,
+    hostedReviewCacheKey,
+    selectionRevision,
+    reconcile
+  ])
 }

@@ -277,20 +277,17 @@ export const createPRDetailRecoveryActions = (
     },
 
     cancelGitHubPRDetailRecovery: () => {
-      const sub = current
-      if (!sub) {
+      const contextKey = current?.contextKey ?? get().prDetailRecovery?.contextKey
+      if (current) {
+        detach(current)
+        current = null
+      }
+      if (!contextKey) {
         return
       }
-      detach(sub)
-      consumed.set(sub.contextKey, { kind: 'closed' })
-      current = null
-      set({
-        prDetailRecovery: {
-          contextKey: sub.contextKey,
-          status: { kind: 'closed' },
-          terminalCount: 0
-        }
-      })
+      // Retry owns the status line from here, including over a retained terminal outcome.
+      consumed.set(contextKey, { kind: 'closed' })
+      set({ prDetailRecovery: { contextKey, status: { kind: 'closed' }, terminalCount: 0 } })
     }
   }
 }
