@@ -13957,10 +13957,6 @@
                   "network": "Orca 無法檢查 {{reviewLabel}} 狀態，因為目前環境無法連線到 {{provider}}。",
                   "untyped": "Orca 無法確認此分支是否已有 {{reviewLabel}}。"
                 },
-                "positive": {
-                  "title": "{{reviewLabelCap}} 詳細資訊不可用",
-                  "body": "Orca 已為此分支儲存了 {{reviewLabel}} 資訊，但無法確認其目前狀態。"
-                },
                 "no_review": {
                   "title": "未找到 {{reviewLabel}}",
                   "body": "建立 {{reviewLabel}} 以開始檢查和審查。"
@@ -14054,10 +14050,6 @@
                 "needs_push": {
                   "title": "分支有未推送的提交",
                   "body": "請在建立 {{reviewLabel}} 之前推送最新提交。"
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} 已存在",
-                  "body": "Orca 找到了此分支的現有 {{reviewLabel}}。"
                 },
                 "detached": {
                   "title": "沒有目前分支",

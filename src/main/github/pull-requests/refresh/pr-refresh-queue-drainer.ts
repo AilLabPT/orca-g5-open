@@ -5,20 +5,19 @@ import type {
 } from '../../../../shared/github/pull-requests/refresh/pull-request-refresh-types'
 import { getPRForBranchOutcome } from '../../client/lookup/pr-for-branch-outcome'
 import {
-  aliasFromCandidate,
-  freshRetryAt,
   hostedReviewOptionArgs,
   isBackground,
   isBudgetedBackground,
-  isMergeabilityPendingOutcome,
-  sameAliasRequestIdentity,
-  validateCandidate,
-  visibleCandidateAfterOutcome
+  validateCandidate
 } from './pr-refresh-candidate-policy'
 import type { PRRefreshEventPublisher } from './pr-refresh-event-publisher'
 import { type PRRefreshPacing, usesActiveRefreshPacing } from './pr-refresh-pacing'
 import type { PRRefreshQueue, PRRefreshQueueEntry } from './pr-refresh-queue'
 import { PRWatchJobRunner } from './pr-refresh-watch-jobs'
+import {
+  scheduleVisibleFollowUp,
+  type PRRefreshVisibleFollowUpOptions
+} from './pr-refresh-visible-follow-up'
 import { prRefreshRateLimitPausedUntil } from './pr-refresh-rate-limit-gate'
 import {
   blockedWslDistroForPath,
@@ -27,15 +26,29 @@ import {
 import { outsideWslUserAct } from '../../../wsl/discovery/wsl-user-act-scope'
 import type { PRRefreshRetryState } from './pr-refresh-retry-state'
 import type { PRRefreshVisibility } from './pr-refresh-visibility'
+import {
+  prRefreshRequestDigest,
+  PRRefreshRequestRegistry,
+  queuedRequestId
+} from './pr-refresh-request-registry'
 
 export type PRRefreshRegistrationCheck = (candidate: GitHubPRRefreshCandidate) => boolean
+
+/** Detail-recovery tickets run their entries and expire deadlines on this drainer's one timer. */
+export type PRRefreshRecoveryHooks = {
+  run: (entry: PRRefreshQueueEntry) => Promise<void>
+  tick: () => number | null
+}
 
 export class PRRefreshQueueDrainer {
   private draining = false
   private timer: ReturnType<typeof setTimeout> | null = null
   // Why: queued work can outlive its project; re-check on every removal path before Git runs.
   private registrationCheck: PRRefreshRegistrationCheck | null = null
+  private recovery: PRRefreshRecoveryHooks | null = null
+  private recoveryDeadline: number | null = null
   readonly watchJobs: PRWatchJobRunner
+  readonly requests = new PRRefreshRequestRegistry()
 
   constructor(
     private readonly queue: PRRefreshQueue,
@@ -51,15 +64,37 @@ export class PRRefreshQueueDrainer {
     this.registrationCheck = check
   }
 
+  getRegistrationCheck(): PRRefreshRegistrationCheck | null {
+    return this.registrationCheck
+  }
+
+  setRecoveryHooks(hooks: PRRefreshRecoveryHooks | null): void {
+    this.recovery = hooks
+  }
+
   schedule(delay = 0): void {
     if (this.timer) {
       clearTimeout(this.timer)
     }
-    this.timer = setTimeout(() => {
-      this.timer = null
-      // The drain serves every queued repo; a scheduling call inside a WSL user act must not lend it that act.
-      void outsideWslUserAct(() => this.drain())
-    }, delay)
+    const recoveryDelay =
+      this.recoveryDeadline === null ? delay : Math.max(0, this.recoveryDeadline - Date.now())
+    const wait = Math.min(delay, recoveryDelay)
+    if (Number.isFinite(wait)) {
+      this.timer = setTimeout(() => this.onTimer(), wait)
+    }
+  }
+
+  private onTimer(): void {
+    this.timer = null
+    // Ticket leases and settlement budgets expire even while a provider read holds the drain.
+    if (this.recovery) {
+      this.recoveryDeadline = this.recovery.tick()
+      if (this.recoveryDeadline !== null) {
+        this.schedule(Number.POSITIVE_INFINITY)
+      }
+    }
+    // The drain serves every queued repo; a scheduling call inside a WSL user act must not lend it that act.
+    void outsideWslUserAct(() => this.drain())
   }
 
   scheduleVisibleFollowUp(
@@ -69,70 +104,17 @@ export class PRRefreshQueueDrainer {
     priority: number,
     aliases: GitHubPRRefreshAlias[],
     windowId?: number,
-    options?: { pendingMergeabilityDelayMs?: number; plannedRetryAt?: number }
+    options?: PRRefreshVisibleFollowUpOptions
   ): void {
-    if (outcome.kind === 'upstream-error') {
-      const retryAt = Math.max(
-        options?.plannedRetryAt ??
-          this.retry.nextVisibleErrorRetryAt(key, this.visibility.candidate(key, candidate)),
-        this.retry.manualGateUntil(key)
-      )
-      this.queue.protectBackgroundUntil(key, retryAt)
-      if (!this.visibility.has(key)) {
-        return
-      }
-      this.queue.setVisibleFollowUp({
-        key,
-        candidate,
-        aliases: new Map(aliases.map((alias) => [alias.cacheKey, alias])),
-        reason: 'visible',
-        priority,
-        dueAt: retryAt,
-        queuedAt: this.queue.nextOrder(),
-        windowId
-      })
-      this.schedule(retryAt - Date.now())
-      return
-    }
-    this.retry.reset(key)
-    const refreshed = visibleCandidateAfterOutcome(candidate, outcome)
-    this.visibility.update(refreshed)
-    if (!this.visibility.has(key)) {
-      return
-    }
-    const followUpCandidate = this.visibility.candidate(key, refreshed)
-    const regularDueAt = freshRetryAt(followUpCandidate) ?? Date.now()
-    const pendingDueAt =
-      options?.pendingMergeabilityDelayMs !== undefined && isMergeabilityPendingOutcome(outcome)
-        ? outcome.fetchedAt + options.pendingMergeabilityDelayMs
-        : null
-    const dueAt = pendingDueAt === null ? regularDueAt : Math.min(regularDueAt, pendingDueAt)
-    if (!Number.isFinite(dueAt)) {
-      const pending = this.queue.get(key)
-      if (
-        pending?.reason === 'visible' &&
-        sameAliasRequestIdentity(
-          aliasFromCandidate(pending.candidate),
-          aliasFromCandidate(followUpCandidate)
-        )
-      ) {
-        this.queue.delete(key)
-      }
-      return
-    }
-    this.queue.setVisibleFollowUp({
-      key,
-      candidate: followUpCandidate,
-      aliases: new Map(aliases.map((alias) => [alias.cacheKey, alias])),
-      reason: 'visible',
-      priority,
-      dueAt,
-      queuedAt: this.queue.nextOrder(),
-      bypassBackgroundBudget: pendingDueAt !== null,
-      followUp: true,
-      windowId
-    })
-    this.schedule(Math.max(0, dueAt - Date.now()))
+    scheduleVisibleFollowUp(
+      {
+        queue: this.queue,
+        retry: this.retry,
+        visibility: this.visibility,
+        schedule: (d) => this.schedule(d)
+      },
+      { key, candidate, outcome, priority, aliases, windowId, options }
+    )
   }
 
   private ordered(): PRRefreshQueueEntry[] {
@@ -182,6 +164,13 @@ export class PRRefreshQueueDrainer {
           }
         }
 
+        if (next.recovery) {
+          await this.recovery?.run(next)
+          if (this.queue.get(next.key) === next && next.dueAt <= Date.now()) {
+            this.queue.delete(next.key)
+          }
+          continue
+        }
         this.queue.delete(next.key)
         const aliases = Array.from(next.aliases.values())
         const skippedReason = validateCandidate(next.candidate)
@@ -248,6 +237,13 @@ export class PRRefreshQueueDrainer {
         if (await this.watchJobs.readHead(next)) {
           continue
         }
+        const requestId = queuedRequestId(next)
+        this.requests.start({
+          requestId,
+          slotKey: next.key,
+          registrationOrder: next.queuedAt,
+          identityDigest: prRefreshRequestDigest(next.candidate, next.watch)
+        })
         const outcome = await getPRForBranchOutcome(
           next.candidate.repoPath,
           next.candidate.branch,
@@ -255,7 +251,7 @@ export class PRRefreshQueueDrainer {
           next.candidate.connectionId ?? null,
           next.candidate.linkedPRNumber == null ? (next.candidate.fallbackPRNumber ?? null) : null,
           ...hostedReviewOptionArgs(next.candidate, next.reason, { watchPRKey: next.watch?.prKey })
-        )
+        ).finally(() => this.requests.settle(requestId))
         if (!this.queue.ownsRequest(next.key, requestSequence)) {
           this.events.broadcast(
             { aliases, reason: next.reason, outcome, requestStartedAt },

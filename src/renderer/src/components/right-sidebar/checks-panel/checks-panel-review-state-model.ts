@@ -33,6 +33,8 @@ export type ChecksPanelReviewState = {
   autoRetryAt?: number
   /** Retry button stays disabled while now < retryDisabledUntil. */
   retryDisabledUntil?: number
+  /** Known review without renderable details: the shared title/status/actions layout owns the panel. */
+  positiveReview?: boolean
 }
 
 export type ChecksPanelRefreshInput = {

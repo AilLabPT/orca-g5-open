@@ -14128,10 +14128,6 @@
                   "network": "Bu ortam {{provider}} adresine ulaşamadığı için Orca {{reviewLabel}} durumunu da kontrol edemedi.",
                   "untyped": "Orca bu branch için zaten bir {{reviewLabel}} bulunup bulunmadığını da doğrulayamadı."
                 },
-                "positive": {
-                  "title": "{{reviewLabelCap}} ayrıntıları kullanılamıyor",
-                  "body": "Orca bu branch için {{reviewLabel}} bilgisini kaydetti ama mevcut durumunu doğrulayamadı."
-                },
                 "no_review": {
                   "title": "{{reviewLabel}} bulunamadı",
                   "body": "Kontrolleri ve incelemeyi başlatmak için bir {{reviewLabel}} oluşturun."
@@ -14225,10 +14221,6 @@
                 "needs_push": {
                   "title": "Branch'te push edilmemiş commit'ler var",
                   "body": "Bir {{reviewLabel}} oluşturmadan önce son commit'leri push edin."
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} zaten mevcut",
-                  "body": "Orca, bu branch için mevcut bir {{reviewLabel}} buldu."
                 },
                 "detached": {
                   "title": "Mevcut branch yok",

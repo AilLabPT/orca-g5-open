@@ -95,7 +95,7 @@ export class PRRefreshPacing {
     const runtimeScope = entry.candidate.connectionId
       ? `ssh:${entry.candidate.connectionId}`
       : `local:${entry.candidate.localGitOptions?.wslDistro ?? 'host'}`
-    return `${entry.windowId ?? 'global'}::${runtimeScope}`
+    return `${entry.pacingScope ?? entry.windowId ?? 'global'}::${runtimeScope}`
   }
 
   private pruneActiveStarts(scope: string, now: number): number[] {

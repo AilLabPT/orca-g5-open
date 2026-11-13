@@ -14091,10 +14091,6 @@
                   "network": "Orca n'a pas non plus pu vérifier le statut de la {{reviewLabel}} car cet environnement n'a pas pu joindre {{provider}}.",
                   "untyped": "Orca n'a pas non plus pu confirmer si cette branche possède déjà une {{reviewLabel}}."
                 },
-                "positive": {
-                  "title": "Détails de la {{reviewLabelCap}} indisponibles",
-                  "body": "Orca possède des informations {{reviewLabel}} enregistrées pour cette branche, mais n'a pas pu confirmer son statut actuel."
-                },
                 "no_review": {
                   "title": "Aucune {{reviewLabel}} trouvée",
                   "body": "Créez une {{reviewLabel}} pour lancer les vérifications et la revue."
@@ -14188,10 +14184,6 @@
                 "needs_push": {
                   "title": "La branche contient des commits non poussés",
                   "body": "Poussez les derniers commits avant de créer une {{reviewLabel}}."
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} existe déjà",
-                  "body": "Orca a trouvé une {{reviewLabel}} existante pour cette branche."
                 },
                 "detached": {
                   "title": "Aucune branche courante",

@@ -54,6 +54,21 @@ export const inflightCommentsRequests = new Map<string, InflightComments>()
 export const inflightWorkItemsRequests = new Map<string, InflightWorkItems>()
 export const inflightProjectViewRequests = new Map<string, InflightProjectView>()
 export const prRequestGenerations = new Map<string, number>()
+// Bumped by each new direct PR lookup; a pending detail-recovery grant yields to newer intent.
+const prLookupIntentRevisions = new Map<string, number>()
+
+export function notePRLookupIntent(cacheKey: string): void {
+  prLookupIntentRevisions.delete(cacheKey)
+  prLookupIntentRevisions.set(cacheKey, (prLookupIntentRevisions.get(cacheKey) ?? 0) + 1)
+  const oldest = prLookupIntentRevisions.keys().next().value
+  if (prLookupIntentRevisions.size > 1_000 && oldest !== undefined) {
+    prLookupIntentRevisions.delete(oldest)
+  }
+}
+
+export function prLookupIntentRevision(cacheKey: string): number {
+  return prLookupIntentRevisions.get(cacheKey) ?? 0
+}
 export const prRefreshStartedHostedReviewEntries = new Map<
   string,
   {

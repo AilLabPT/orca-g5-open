@@ -10423,10 +10423,6 @@
                   "network": "O Orca também não conseguiu verificar o status de {{reviewLabel}} porque este ambiente não conseguiu alcançar {{provider}}.",
                   "untyped": "O Orca também não conseguiu confirmar se esta branch já tem um(a) {{reviewLabel}}."
                 },
-                "positive": {
-                  "title": "Detalhes de {{reviewLabelCap}} indisponíveis",
-                  "body": "O Orca salvou informações de {{reviewLabel}} para esta branch, mas não conseguiu confirmar seu status atual."
-                },
                 "no_review": {
                   "title": "Nenhum(a) {{reviewLabel}} encontrado(a)",
                   "body": "Crie um(a) {{reviewLabel}} para iniciar verificações e revisão."
@@ -10520,10 +10516,6 @@
                 "needs_push": {
                   "title": "A branch tem commits não enviados",
                   "body": "Faça push dos commits mais recentes antes de criar um(a) {{reviewLabel}}."
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} já existe",
-                  "body": "O Orca encontrou um(a) {{reviewLabel}} existente para esta branch."
                 },
                 "detached": {
                   "title": "Nenhuma branch atual",

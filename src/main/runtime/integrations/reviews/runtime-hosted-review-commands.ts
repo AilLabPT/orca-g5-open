@@ -35,6 +35,9 @@ import {
 import type { HostedReviewExecutionOptions } from '../../../source-control/hosted-review-git-options'
 import { createStackedHostedReview } from '../../../source-control/stacked-hosted-review-creation'
 import { guardWslUncPathAccess } from '../../../wsl/filesystem/wsl-unc-access-gate'
+import type { PRDetailRecoveryStartArgs } from '../../../../shared/github/pull-requests/refresh/pr-detail-recovery-contract'
+import type { GitHubPRRefreshCandidate } from '../../../../shared/github/pull-requests/refresh/pull-request-refresh-types'
+import { prDetailRecoveryCandidate } from '../../../github/pull-requests/refresh/pr-detail-recovery-candidate'
 
 type HostedReviewTargetArgs = { repoSelector: string; worktreeSelector?: string }
 
@@ -134,6 +137,35 @@ export class RuntimeHostedReviewCommands {
           ...lookupOptionArgs
         )
     )
+  }
+
+  /** Server-registered repo routing for a detail-recovery ticket; client paths are correlation only. */
+  async resolvePRDetailRecoveryCandidate(
+    args: PRDetailRecoveryStartArgs
+  ): Promise<GitHubPRRefreshCandidate | 'validation'> {
+    let repo: Repo
+    try {
+      repo = await this.deps.resolveRepo(`id:${args.identity.repoId}`)
+    } catch {
+      return 'validation'
+    }
+    if ((repo.kind ?? 'git') !== 'git') {
+      return 'validation'
+    }
+    // Matches runHostedPRRead's key so this host's direct reads for the alias supersede the ticket.
+    const candidate = prDetailRecoveryCandidate(args, `${repo.path}::${args.identity.branch}`)
+    if (!candidate) {
+      return 'validation'
+    }
+    const wslDistro = this.deps.getExecutionOptions(repo)?.localGitExecOptions?.wslDistro
+    return {
+      ...candidate,
+      repoId: repo.id,
+      repoPath: repo.path,
+      connectionId: hostedReviewSshConnectionId(getStoredRepoExecutionHostId(repo)),
+      executionHostId: getStoredRepoExecutionHostId(repo) ?? null,
+      ...(wslDistro ? { localGitOptions: { wslDistro } } : {})
+    }
   }
 
   async getHostedReviewForBranch(args: {

@@ -13820,10 +13820,6 @@
                   "network": "Orca tampoco pudo verificar el estado de {{reviewLabel}} porque este entorno no pudo conectar con {{provider}}.",
                   "untyped": "Orca tampoco pudo confirmar si esta rama ya tiene una solicitud de revisión ({{reviewLabel}})."
                 },
-                "positive": {
-                  "title": "Detalles de {{reviewLabelCap}} no disponibles",
-                  "body": "Orca ha guardado información de {{reviewLabel}} para esta rama pero no pudo confirmar su estado actual."
-                },
                 "no_review": {
                   "title": "No se encontró ninguna solicitud de revisión ({{reviewLabel}})",
                   "body": "Crea una solicitud de revisión ({{reviewLabel}}) para iniciar las verificaciones y la revisión."
@@ -13917,10 +13913,6 @@
                 "needs_push": {
                   "title": "La rama tiene commits sin enviar",
                   "body": "Envía los últimos commits antes de crear una solicitud de revisión ({{reviewLabel}})."
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} ya existe",
-                  "body": "Orca encontró una solicitud de revisión existente ({{reviewLabel}}) para esta rama."
                 },
                 "detached": {
                   "title": "Sin rama actual",

@@ -14151,10 +14151,6 @@
                   "network": "Orca konnte außerdem den Status des {{reviewLabel}}s nicht prüfen, da diese Umgebung {{provider}} nicht erreichen konnte.",
                   "untyped": "Orca konnte außerdem nicht bestätigen, ob für diesen Branch bereits ein {{reviewLabel}} existiert."
                 },
-                "positive": {
-                  "title": "Details zum {{reviewLabelCap}} nicht verfügbar",
-                  "body": "Orca hat gespeicherte Informationen zum {{reviewLabel}} für diesen Branch, konnte aber den aktuellen Status nicht bestätigen."
-                },
                 "no_review": {
                   "title": "Kein {{reviewLabel}} gefunden",
                   "body": "Einen {{reviewLabel}} erstellen, um Checks und Review zu starten."
@@ -14248,10 +14244,6 @@
                 "needs_push": {
                   "title": "Branch hat ungepushte Commits",
                   "body": "Vor dem Erstellen eines {{reviewLabel}}s die neuesten Commits pushen."
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} existiert bereits",
-                  "body": "Orca hat einen bestehenden {{reviewLabel}} für diesen Branch gefunden."
                 },
                 "detached": {
                   "title": "Kein aktueller Branch",

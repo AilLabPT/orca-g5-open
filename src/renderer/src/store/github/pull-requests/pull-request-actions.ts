@@ -11,7 +11,11 @@ import { isFresh } from '../cache/cache-policy'
 import { buildGitHubPRRefreshStateClearToken } from '../refresh/pr-refresh-state'
 import { githubHostedReviewFallbackPRNumber, prLookupHintKey } from './pr-result-routing'
 import { nextLookupGeneration } from '../../slices/hosted-review/refresh/lookup-generation-sequence'
-import { inflightPRRequests, prRequestGenerations } from '../requests/request-coordination'
+import {
+  inflightPRRequests,
+  notePRLookupIntent,
+  prRequestGenerations
+} from '../requests/request-coordination'
 import { getGitHubSourceTarget, settingsForGitHubRepoOwner } from '../work-items/work-item-routing'
 import { captureLinkedReviewClearScope, clearLinkedReview } from './linked-review-clear'
 import { shouldClearDivergedLinkedMergedPR } from '../../../../../shared/github/pull-requests/refresh/linked-pr-staleness'
@@ -109,6 +113,7 @@ export const createPullRequestActions = (
       return inflightRequest.promise
     }
 
+    notePRLookupIntent(cacheKey)
     const generation = nextLookupGeneration()
     const requestStartedAt = Date.now()
     const requestStartedHostedReviewEntry = get().hostedReviewCache[hostedReviewCacheKey]

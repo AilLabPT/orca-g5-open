@@ -13,13 +13,8 @@ import {
   shouldBroadcastQueued,
   validateCandidate
 } from './pr-refresh-candidate-policy'
-import {
-  PRRefreshEventPublisher,
-  type PRRefreshOutcomeObserver
-} from './pr-refresh-event-publisher'
-import { PRRefreshPacing } from './pr-refresh-pacing'
-import { PRRefreshQueue } from './pr-refresh-queue'
-import { PRRefreshQueueDrainer, type PRRefreshRegistrationCheck } from './pr-refresh-queue-drainer'
+import type { PRRefreshOutcomeObserver } from './pr-refresh-event-publisher'
+import type { PRRefreshRegistrationCheck } from './pr-refresh-queue-drainer'
 import {
   prWatchQueueKey,
   schedulePRWatchEntry,
@@ -27,19 +22,13 @@ import {
   type PRWatchJobHooks
 } from './pr-refresh-watch-jobs'
 import { prRefreshRateLimitPausedUntil } from './pr-refresh-rate-limit-gate'
-import { PRRefreshRetryState } from './pr-refresh-retry-state'
-import { PRRefreshVisibility } from './pr-refresh-visibility'
 import {
   blockedWslDistroForPath,
   wslDistroForPath
 } from '../../../wsl/filesystem/wsl-unc-access-gate'
 
-const retry = new PRRefreshRetryState()
-const queue = new PRRefreshQueue((key) => retry.reset(key))
-const pacing = new PRRefreshPacing()
-const visibility = new PRRefreshVisibility()
-const events = new PRRefreshEventPublisher()
-const drainer = new PRRefreshQueueDrainer(queue, pacing, visibility, retry, events)
+import { drainer, events, pacing, queue, retry, visibility } from './pr-refresh-coordinator-state'
+import { registerPRRefreshRequest } from './pr-detail-recovery-coordinator'
 
 export function addPRRefreshOutcomeObserver(observer: PRRefreshOutcomeObserver): () => void {
   return events.addOutcomeObserver(observer)
@@ -74,7 +63,8 @@ export async function runHostedPRRead(
   candidate: GitHubPRRefreshCandidate,
   read: () => Promise<PRRefreshOutcome>
 ): Promise<PRRefreshOutcome> {
-  const outcome = await read()
+  const settle = registerPRRefreshRequest(candidate, 'h', true)
+  const outcome = await read().finally(settle)
   events.observe(candidate, outcome)
   return outcome
 }
@@ -122,6 +112,9 @@ export function enqueuePRRefresh(
   }
 
   const enqueued = queue.enqueue(candidate, reason, priority, windowId)
+  if (reason !== 'visible') {
+    registerPRRefreshRequest(candidate, null, true)
+  }
   const pending = queue.get(key)
   if (pending && reason === 'visible' && candidate.isSelected && priority >= 80) {
     // Foreground exposure keeps retry gates while bypassing the list budget once.
@@ -217,6 +210,8 @@ export async function refreshPRNow(
     }
   }
 
+  // A direct read is new intent for this alias: it supersedes unadmitted detail recovery.
+  registerPRRefreshRequest(candidate, null, true)
   const primaryGateUntil = await prRefreshRateLimitPausedUntil(candidate, false)
   const gateUntil = Math.max(primaryGateUntil ?? 0, retry.manualGateUntil(key))
   if (gateUntil > Date.now()) {
@@ -253,6 +248,7 @@ export async function refreshPRNow(
   const requestStartedAt = Date.now()
   queue.noteRequestStarted(key, requestSequence)
   events.broadcast({ aliases, reason, status: 'in-flight', requestStartedAt }, requestSequence)
+  const settleRead = registerPRRefreshRequest(candidate, 'd', false)
   const outcome = await getPRForBranchOutcome(
     candidate.repoPath,
     candidate.branch,
@@ -260,7 +256,7 @@ export async function refreshPRNow(
     candidate.connectionId ?? null,
     candidate.linkedPRNumber == null ? (candidate.fallbackPRNumber ?? null) : null,
     ...hostedReviewOptionArgs(candidate, reason, options)
-  )
+  ).finally(settleRead)
   if (!queue.ownsRequest(key, requestSequence)) {
     events.broadcast({ aliases, reason, outcome, requestStartedAt }, requestSequence)
     return outcome

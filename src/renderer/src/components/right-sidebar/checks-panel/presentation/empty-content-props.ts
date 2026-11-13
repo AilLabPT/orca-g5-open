@@ -14,7 +14,7 @@ export type ChecksPanelEmptyContentModel = Pick<
   | 'linkedGitLabMR'
   | 'linkedPR'
   | 'linkedReviewNumber'
-  | 'prNumber'
+  | 'cachedPRNumber'
   | 'prRefreshState'
   | 'suppressedGitHubPR'
 > &

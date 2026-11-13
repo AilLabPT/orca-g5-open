@@ -13482,10 +13482,6 @@
                   "network": "Orca はこの環境から {{provider}} に接続できないため、{{reviewLabel}} ステータスを確認できませんでした。",
                   "untyped": "Orca はこのブランチに {{reviewLabel}} が既に存在するかどうかを確認できませんでした。"
                 },
-                "positive": {
-                  "title": "{{reviewLabelCap}} の詳細が利用できません",
-                  "body": "Orca はこのブランチの {{reviewLabel}} 情報を保存しましたが、現在のステータスを確認できませんでした。"
-                },
                 "no_review": {
                   "title": "{{reviewLabel}} が見つかりません",
                   "body": "{{reviewLabel}} を作成して、チェックとレビューを開始します。"
@@ -13579,10 +13575,6 @@
                 "needs_push": {
                   "title": "ブランチに未プッシュのコミットがあります",
                   "body": "{{reviewLabel}} を作成する前に、最新のコミットをプッシュしてください。"
-                },
-                "existing": {
-                  "title": "{{reviewLabelCap}} は既に存在します",
-                  "body": "Orca はこのブランチの既存の {{reviewLabel}} を見つけました。"
                 },
                 "detached": {
                   "title": "現在のブランチがありません",

@@ -25,6 +25,7 @@ function baseInput(): RefreshInput {
     activeWorktreePushTarget: null,
     asyncResultKeyRef: { current: 'cache::main::42' },
     branch: 'main',
+    checksPanelReviewLookupResult: { state: 'unknown', openReviewUrl: null },
     expireGitHubPRRefreshState: vi.fn(),
     fallbackGitHubPRNumber: null,
     fetchGitLabDetails: vi.fn(),

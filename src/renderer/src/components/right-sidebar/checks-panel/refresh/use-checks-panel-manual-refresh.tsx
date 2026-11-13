@@ -34,6 +34,7 @@ export function useChecksPanelManualRefresh(model: ChecksPanelManualRefreshInput
     activeWorktreePushTarget,
     asyncResultKeyRef,
     branch,
+    checksPanelReviewLookupResult,
     expireGitHubPRRefreshState,
     fallbackGitHubPRNumber,
     fetchPRChecks,
@@ -69,6 +70,10 @@ export function useChecksPanelManualRefresh(model: ChecksPanelManualRefreshInput
     panelContextKey,
     hostedReviewCacheKey
   )
+  const positiveHintPRNumber =
+    checksPanelReviewLookupResult.state === 'positive_unresolved'
+      ? (checksPanelReviewLookupResult.reviewNumber ?? null)
+      : null
   const handleRefresh = useCallback(async () => {
     if (!repo || !branch) {
       return
@@ -206,7 +211,10 @@ export function useChecksPanelManualRefresh(model: ChecksPanelManualRefreshInput
           ...repoOptions,
           worktreeId: activeWorktreeId ?? undefined,
           linkedPRNumber: linkedPR,
-          fallbackPRNumber: fallbackGitHubPRNumber,
+          // Retry keeps the positive evidence's number as a hosted-review hint when nothing is usable.
+          ...(linkedPR === null && fallbackGitHubPRNumber === null && positiveHintPRNumber !== null
+            ? { fallbackPRNumber: positiveHintPRNumber, fallbackPRSource: 'hosted-review' as const }
+            : { fallbackPRNumber: fallbackGitHubPRNumber }),
           reason: 'manual',
           userRefresh: true
         })
@@ -367,6 +375,7 @@ export function useChecksPanelManualRefresh(model: ChecksPanelManualRefreshInput
     prCacheKey,
     linkedPR,
     fallbackGitHubPRNumber,
+    positiveHintPRNumber,
     isFolder,
     gitStatusSnapshot,
     panelContextKey,
