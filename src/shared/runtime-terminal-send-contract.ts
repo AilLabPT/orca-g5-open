@@ -7,6 +7,11 @@ export type RuntimeTerminalSend = {
   refusedReason?: 'no-agent' | 'permission'
   prompt?: RuntimeTerminalPromptDelivery
   writeSettlement?: WriteSettlement
+  /** How long the client must wait before sending this text's Enter. Older hosts omit it. */
+  submitDelayMs?: number
+  /** Names this text as the terminal's last input; its Enter passes it back as
+   *  `expectInputGeneration`. Older hosts omit it. */
+  inputGeneration?: number
 }
 
 export type RuntimeTerminalPromptStage = 'input_accepted' | 'turn_started'

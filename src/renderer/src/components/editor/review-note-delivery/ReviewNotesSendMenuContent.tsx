@@ -35,6 +35,7 @@ import {
   type ActiveAgentNotesSendResult
 } from '@/lib/agent-session/messaging/terminal/active-agent-note-send-result'
 import { sendMessageToAgent } from '@/lib/agent-session/messaging/agent-message-send'
+import { showNotePastedToast } from '@/components/notes/delivery/note-pasted-toast'
 import {
   deriveNotesSendAgentTargets,
   type NotesSendAgentTarget
@@ -136,6 +137,8 @@ export function ReviewNotesSendMenuContent({
     (
       send: () => Promise<ActiveAgentNotesSendResult>,
       onSent: () => void,
+      /** Shows the pasted-unsent line in place of the toast `toastId`. */
+      onPasted: (toastId: string | number) => void,
       options: { explicitTarget?: boolean; structured?: boolean } = {}
     ) => {
       // Settle the loading toast in place: immediate sends can resolve before Sonner mounts, racing a separate dismissal.
@@ -148,6 +151,10 @@ export function ReviewNotesSendMenuContent({
 
       const sending = send()
         .then((result) => {
+          if (result.status === 'pasted') {
+            onPasted(pending)
+            return
+          }
           if (result.status === 'sent') {
             onSent()
             toast.success(
@@ -223,6 +230,16 @@ export function ReviewNotesSendMenuContent({
             agent_kind: agentKindForAgentType(target.agentType),
             launch_source: launchSource,
             request_kind: 'followup'
+          })
+        },
+        (toastId) => {
+          // The terminal holds the notes now; sending them again would paste them twice.
+          onPromptDelivered?.()
+          showNotePastedToast({
+            worktreeId,
+            target: target.messageTarget,
+            agentLabel: formatAgentTypeLabel(target.agentType),
+            toastId
           })
         },
         { explicitTarget: true, structured: target.messageTarget.kind === 'structured-session' }

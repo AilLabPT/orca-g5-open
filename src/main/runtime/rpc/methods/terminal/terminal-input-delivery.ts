@@ -168,6 +168,20 @@ export function isTerminalSendGuardNotWritable(error: unknown): boolean {
   return message.includes('terminal_guard_not_writable')
 }
 
+/** Refuses a guarded Enter once the terminal took any input after the paste that named `expected`. */
+export function assertTerminalInputUnchanged(
+  runtime: OrcaRuntimeService,
+  ptyId: string | undefined,
+  expected: number | undefined
+): void {
+  if (
+    expected !== undefined &&
+    (!ptyId || runtime.terminalRunFacts.readInputGeneration(ptyId) !== expected)
+  ) {
+    throw new Error('terminal_guard_not_writable')
+  }
+}
+
 export function assertTerminalSendExactPtyBinding(
   runtime: OrcaRuntimeService,
   handle: string,

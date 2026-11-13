@@ -21176,6 +21176,9 @@
     "toastFallbacks": {
       "worktreeCreateFailed": "Impossible de créer l’arbre de travail.",
       "missingBaseBranchHelp": "Créez un premier commit (par exemple sur main), ou sélectionnez une branche existante dans « Créer à partir de », puis réessayez."
+    },
+    "agentNotes": {
+      "pastedPressEnter": "Note collée dans {{agent}}. Appuyez sur Entrée dans ce terminal pour l’envoyer."
     }
   },
   "dashboardPopout": {

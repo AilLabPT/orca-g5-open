@@ -47,6 +47,41 @@ describe('requested terminal write settlement', () => {
   })
 })
 
+describe('submit delay reported for a client-held Enter', () => {
+  const write = (): boolean => true
+  const text = 'x'.repeat(1_000)
+
+  it('adds the key-event burst for Codex on a Windows host', () => {
+    const writer = new RuntimeTerminalWriter(
+      write,
+      () => 'win32',
+      () => 'codex'
+    )
+    expect(writer.textSubmitDelay('pty', text).requiredMs).toBe(3_516)
+  })
+
+  it('is the settle floor for Claude on macOS', () => {
+    const writer = new RuntimeTerminalWriter(
+      write,
+      () => 'darwin',
+      () => 'claude'
+    )
+    expect(writer.textSubmitDelay('pty', text).requiredMs).toBe(501)
+  })
+
+  it('does not shorten a long Windows Codex burst to the host-held cap', () => {
+    const writer = new RuntimeTerminalWriter(
+      write,
+      () => 'win32',
+      () => 'codex'
+    )
+    expect(writer.textSubmitDelay('pty', 'x'.repeat(60_000))).toEqual({
+      requiredMs: 181_438,
+      hostHeldMs: 20_000
+    })
+  })
+})
+
 describe('submit settle before Enter', () => {
   /** An idle proof the test settles by hand, after advancing the fake clock. */
   function heldProof(): { claim: () => Promise<boolean>; settle: (idle: boolean) => void } {

@@ -11,6 +11,8 @@ export type ActiveAgentNotesSendStatus =
   | 'not-ready'
   | 'not-writable'
   | 'partial-submit-failed'
+  /** Pasted into the agent's input and left there: the user presses Enter. */
+  | 'pasted'
   /** Sent, but nobody could confirm the agent got it: the host may hold it. */
   | 'unconfirmed'
 
@@ -31,6 +33,7 @@ export type ActiveAgentNotesSendFailureCode =
   | 'status-unavailable'
   | 'terminal-send-permission'
   | 'terminal-send-refused'
+  | 'terminal-send-busy'
   | 'terminal_not_writable'
   | 'submit-readiness-lost'
   | 'submit-terminal-unavailable'
@@ -133,6 +136,7 @@ export function activeAgentNotesSendFailureMessage(
     case 'unconfirmed':
       message = agentSessionWriteNoticeEnglish(['sendOutcomeLost'])
       break
+    case 'pasted':
     case 'sent':
       message = ''
       break

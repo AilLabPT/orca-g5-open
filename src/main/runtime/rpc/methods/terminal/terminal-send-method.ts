@@ -10,6 +10,7 @@ import { assertTerminalAgentSendable } from '../../terminal/terminal-agent-send-
 import { TerminalSend } from '../../../../../shared/rpc-contract/terminal-unary-params'
 import type { RuntimeTerminalSend } from '../../../../../shared/runtime-terminal-send-contract'
 import {
+  assertTerminalInputUnchanged,
   assertTerminalSendExactPtyBinding,
   assertTerminalSendTextWithinLimit,
   commitMobileInputFloorClaim,
@@ -158,6 +159,8 @@ export const TERMINAL_SEND_METHODS = [
                     assertTerminalSendExactPtyBinding(runtime, params.terminal, ptyId)
                   }
                 })
+                // Last, with nothing awaited after it: an Enter must submit the paste it was sent for.
+                assertTerminalInputUnchanged(runtime, ptyId, params.expectInputGeneration)
               }
             : undefined
         if (params.requireAgentStatus === 'sendable') {
@@ -257,6 +260,10 @@ export const TERMINAL_SEND_METHODS = [
                     ? { requireWriteSettlement: true as const }
                     : {}),
                   ...(params.enter === true ? { waitForLaunchComposer: true as const } : {}),
+                  // A guarded paste's Enter is the client's own second send.
+                  ...(params.requireAgentStatus === 'sendable' && hasText && !hasSuffix
+                    ? { clientSubmit: true as const }
+                    : {}),
                   ...(reserveWrite ? { reserveWrite } : {}),
                   ...(params.inputKind !== 'query-reply' && mobileFloorClientId
                     ? { afterWrite: () => commitMobileInputFloorClaim(mobileFloorClaim) }

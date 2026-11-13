@@ -159,10 +159,11 @@ export function createUiAgentActions(
         import('@/lib/agent-session/messaging/terminal/active-agent-note-send-result'),
         import('@/lib/agent-session/messaging/agent-message-send')
       ])
+      const messageTarget = runningAgentMessageTarget(target)
       const sending = sendMessageToAgent({
         worktreeId: mode.worktreeId,
         prompt: mode.prompt,
-        target: runningAgentMessageTarget(target)
+        target: messageTarget
       }).catch(() => {
         console.error('Failed to send notes to sidebar agent target:', {
           code: 'runtime-unverifiable'
@@ -175,6 +176,20 @@ export function createUiAgentActions(
       const stillCurrent = (): boolean => {
         const current = get().agentSendPopoverTargetMode
         return current?.id === mode.id && current.instanceId === mode.instanceId
+      }
+
+      if (result.status === 'pasted') {
+        // The terminal holds the notes now; sending them again would paste them twice.
+        mode.onPromptDelivered?.()
+        const { showNotePastedToast } =
+          await import('@/components/notes/delivery/note-pasted-toast')
+        showNotePastedToast({
+          worktreeId: mode.worktreeId,
+          target: messageTarget,
+          agentLabel: label
+        })
+        get().closeAgentSendPopoverTargetMode(mode.id, mode.instanceId)
+        return true
       }
 
       if (result.status !== 'sent') {

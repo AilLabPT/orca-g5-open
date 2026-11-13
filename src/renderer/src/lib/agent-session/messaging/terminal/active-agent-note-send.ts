@@ -1,6 +1,5 @@
 import type { RuntimeTerminalWait } from '../../../../../../shared/runtime-terminal-contracts'
 import { runtimeTargetForOwnerEnvironment } from '@/runtime/rpc/targets/runtime-client-target'
-import type { RuntimeClientTarget } from '../../../../../../shared/runtime-client-target'
 import { useAppStore } from '@/store/index'
 import { callRuntimeRpc } from '@/runtime/rpc/calls/runtime-rpc-call'
 import { runtimeEnvironmentIdOrLocalUnlessTwin } from '@/lib/workspace/ownership/worktree-runtime-owner'
@@ -84,7 +83,10 @@ async function sendNotesToActiveAgentSessionInternal({
   }
   if (explicitNoteTarget) {
     return reportNoteSendFailure(
-      await sendPromptToExplicitAgentTarget(runtimeTarget, terminal.handle, trimmedPrompt, submit),
+      await sendPromptWithGuardedPasteAndEnter(runtimeTarget, terminal.handle, trimmedPrompt, {
+        allowLegacyFallback: false,
+        submit
+      }),
       noteTarget
     )
   }
@@ -168,16 +170,4 @@ async function sendNotesToActiveAgentSessionInternal({
     await sendPromptWithLegacyCombinedSend(runtimeTarget, terminal.handle, trimmedPrompt, submit),
     noteTarget
   )
-}
-
-async function sendPromptToExplicitAgentTarget(
-  runtimeTarget: RuntimeClientTarget,
-  terminalHandle: string,
-  prompt: string,
-  submit: boolean
-): Promise<ActiveAgentNotesSendResult> {
-  return await sendPromptWithGuardedPasteAndEnter(runtimeTarget, terminalHandle, prompt, {
-    allowLegacyFallback: false,
-    submit
-  })
 }

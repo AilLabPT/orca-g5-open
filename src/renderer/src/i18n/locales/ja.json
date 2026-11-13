@@ -20322,6 +20322,9 @@
       "filesDropFailed": "ファイルをドロップできませんでした。",
       "filesUploadFailed": "ファイルをアップロードできませんでした。",
       "filesResolveDroppedFailed": "ドロップしたファイルを解決できませんでした。"
+    },
+    "agentNotes": {
+      "pastedPressEnter": "メモを {{agent}} に貼り付けました。送信するには、そこで Enter キーを押してください。"
     }
   },
   "dashboardPopout": {

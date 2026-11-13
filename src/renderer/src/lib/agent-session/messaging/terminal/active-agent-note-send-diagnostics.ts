@@ -16,7 +16,7 @@ export function reportNoteSendFailure(
   result: ActiveAgentNotesSendResult,
   noteTarget: ActiveTerminalNoteTarget | null
 ): ActiveAgentNotesSendResult {
-  if (result.status === 'sent' || result.status === 'empty') {
+  if (result.status === 'sent' || result.status === 'empty' || result.status === 'pasted') {
     return result
   }
   const code = result.code ?? codeForStatus(result.status)
@@ -61,7 +61,7 @@ function isTimeoutError(error: unknown): boolean {
 }
 
 function codeForStatus(
-  status: Exclude<ActiveAgentNotesSendResult['status'], 'sent' | 'empty'>
+  status: Exclude<ActiveAgentNotesSendResult['status'], 'sent' | 'empty' | 'pasted'>
 ): ActiveAgentNotesSendFailureCode {
   switch (status) {
     case 'no-active-terminal':
