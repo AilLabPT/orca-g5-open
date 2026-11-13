@@ -1,3 +1,8 @@
+> **G5 independent fork — experimental source, unsigned.** This branch modifies [stablyai/orca](https://github.com/stablyai/orca) v1.4.246. It is **not** an official Orca release and has **no SignPath approval or signed G5 release**. Do not treat the private CI QA installer as a trusted public release.
+>
+> **[Code signing policy](CODE_SIGNING_POLICY.md)** | [Privacy readiness](G5_PRIVACY_READINESS.md) | [MIT License](LICENSE) | [Source branch](https://github.com/AilLabPT/orca-g5-open/tree/g5-1.4.246)
+
+---
 <h1 align="center">
   <a href="https://onOrca.dev"><img src="resources/build/icon.png" alt="Orca" width="64" valign="middle" /></a> Orca
 </h1>
