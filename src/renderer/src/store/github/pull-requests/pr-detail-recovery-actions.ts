@@ -61,8 +61,11 @@ export const createPRDetailRecoveryActions = (
     }
     if (terminal) {
       consumed.set(sub.contextKey, status)
-      while (consumed.size > MAX_RETAINED_EPOCHS) {
-        consumed.delete(consumed.keys().next().value as string)
+      for (const oldest of consumed.keys()) {
+        if (consumed.size <= MAX_RETAINED_EPOCHS) {
+          break
+        }
+        consumed.delete(oldest)
       }
     }
     set((s) => ({

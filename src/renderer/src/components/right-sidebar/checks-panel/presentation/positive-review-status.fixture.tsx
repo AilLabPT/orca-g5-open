@@ -90,7 +90,7 @@ export const keyboardRetryFocusAdmitted = defineFixture({
     const retry = Array.from(frame.querySelectorAll('button')).find(
       (button) => button.textContent === 'Retry'
     )
-    retry?.focus({ focusVisible: true } as FocusOptions)
+    retry?.focus()
     retry?.click()
   }
 })

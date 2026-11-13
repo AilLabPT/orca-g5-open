@@ -1,37 +1,42 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
-import type { PRDetailRecoveryStartArgs } from '../../../../../shared/github/pull-requests/refresh/pr-detail-recovery-contract'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type {
+  PRDetailRecoveryCommitArgs,
+  PRDetailRecoveryStartArgs
+} from '../../../../../shared/github/pull-requests/refresh/pr-detail-recovery-contract'
 
 // Host modules load by computed path so the web typecheck project stays free of main-process code.
 type HostModule = Record<string, (...args: unknown[]) => unknown>
-type HostMocks = Record<string, Mock> & { getPRForBranchOutcomeMock: Mock }
 const loadHost = (path: string): Promise<HostModule> =>
   import(/* @vite-ignore */ `../../../../../main/github/${path}`)
 
-const { coordinatorMocks, moduleMocks } = await vi.hoisted(async () => {
+const { coordinatorMocks, moduleMocks, getPRForBranchOutcomeMock } = await vi.hoisted(async () => {
   const mocksPath =
     '../../../../../main/github/pull-requests/refresh/pr-refresh-coordinator-test-mocks'
   const moduleMocks: HostModule = await import(/* @vite-ignore */ mocksPath)
-  return {
-    coordinatorMocks: moduleMocks.createPRRefreshCoordinatorMocks() as unknown as HostMocks,
-    moduleMocks
+  const coordinatorMocks: unknown = moduleMocks.createPRRefreshCoordinatorMocks()
+  const provider =
+    typeof coordinatorMocks === 'object' &&
+    coordinatorMocks !== null &&
+    'getPRForBranchOutcomeMock' in coordinatorMocks
+      ? coordinatorMocks.getPRForBranchOutcomeMock
+      : null
+  if (!vi.isMockFunction(provider)) {
+    throw new Error('PR refresh coordinator mocks changed shape')
   }
+  return { coordinatorMocks, moduleMocks, getPRForBranchOutcomeMock: provider }
 })
 
-vi.mock(
-  '../../../../../main/github/pull-requests/refresh/pr-refresh-renderer-port',
-  () => moduleMocks.rendererPortModuleMock(coordinatorMocks) as Record<string, unknown>
+vi.mock('../../../../../main/github/pull-requests/refresh/pr-refresh-renderer-port', () =>
+  Object.assign({}, moduleMocks.rendererPortModuleMock(coordinatorMocks))
 )
-vi.mock(
-  '../../../../../main/github/client/lookup/pr-for-branch-outcome',
-  () => moduleMocks.clientModuleMock(coordinatorMocks) as Record<string, unknown>
+vi.mock('../../../../../main/github/client/lookup/pr-for-branch-outcome', () =>
+  Object.assign({}, moduleMocks.clientModuleMock(coordinatorMocks))
 )
-vi.mock(
-  '../../../../../main/github/repositories/github-api-repository-remote-probe',
-  () => moduleMocks.githubApiRepositoryModuleMock(coordinatorMocks) as Record<string, unknown>
+vi.mock('../../../../../main/github/repositories/github-api-repository-remote-probe', () =>
+  Object.assign({}, moduleMocks.githubApiRepositoryModuleMock(coordinatorMocks))
 )
-vi.mock(
-  '../../../../../main/github/api/rate-limit',
-  () => moduleMocks.rateLimitModuleMock(coordinatorMocks) as Record<string, unknown>
+vi.mock('../../../../../main/github/api/rate-limit', () =>
+  Object.assign({}, moduleMocks.rateLimitModuleMock(coordinatorMocks))
 )
 
 import {
@@ -42,7 +47,8 @@ import {
 } from '../github-slice-test-harness'
 import { getGitHubRepoCacheKey } from '../../../../../shared/github/cache/github-cache-key'
 
-const { getPRForBranchOutcomeMock } = coordinatorMocks
+// The coordinator test reset pins fake time here.
+const START_AT = 1_000
 const repo = { id: 'repo-1', path: '/repo', displayName: 'Repo', badgeColor: 'blue', addedAt: 1 }
 const worktree = makePRRefreshWorktree({ id: 'wt-1', branch: 'feature/test', head: 'h2' })
 const context = {
@@ -75,7 +81,8 @@ async function connectNativeBridge(): Promise<void> {
       ),
     waitPRDetailRecovery: (args: { ticketId: string; afterRevision: number }) =>
       host.waitPRDetailRecovery(callerKey, args.ticketId, args.afterRevision),
-    commitPRDetailRecovery: async (args: object) => host.commitPRDetailRecovery(callerKey, args),
+    commitPRDetailRecovery: async (args: PRDetailRecoveryCommitArgs) =>
+      host.commitPRDetailRecovery(callerKey, args),
     cancelPRDetailRecovery: async (args: { ticketId: string }) =>
       host.cancelPRDetailRecovery(callerKey, args.ticketId)
   })
@@ -112,7 +119,7 @@ describe('Checks detail recovery through the host coordinator', () => {
     getPRForBranchOutcomeMock.mockResolvedValue({
       kind: 'found',
       pr: makePR({ number: 8, url: 'https://github.com/acme/widgets/pull/8', headSha: 'h2' }),
-      fetchedAt: Date.now()
+      fetchedAt: START_AT
     })
     const { store, cacheKey } = setup()
     store.getState().notePRDetailRecoveryPanelVisible(true)
@@ -131,7 +138,7 @@ describe('Checks detail recovery through the host coordinator', () => {
   })
 
   it('reports an unusable read without retrying it in the same exposure', async () => {
-    getPRForBranchOutcomeMock.mockResolvedValue({ kind: 'no-pr', fetchedAt: Date.now() })
+    getPRForBranchOutcomeMock.mockResolvedValue({ kind: 'no-pr', fetchedAt: START_AT })
     const { store } = setup()
     store.getState().notePRDetailRecoveryPanelVisible(true)
     store.getState().reconcileGitHubPRDetails(context)
@@ -154,7 +161,7 @@ describe('Checks detail recovery through the host coordinator', () => {
     const direct = Promise.withResolvers<{ kind: 'no-pr'; fetchedAt: number }>()
     getPRForBranchOutcomeMock
       .mockReturnValueOnce(direct.promise)
-      .mockResolvedValue({ kind: 'no-pr', fetchedAt: Date.now() })
+      .mockResolvedValue({ kind: 'no-pr', fetchedAt: START_AT })
     const { store } = setup()
     store.getState().notePRDetailRecoveryPanelVisible(true)
     void store.getState().fetchPRForBranch('/repo', 'feature/test', {
@@ -167,7 +174,7 @@ describe('Checks detail recovery through the host coordinator', () => {
     expect(getPRForBranchOutcomeMock).toHaveBeenCalledTimes(1)
     expect(store.getState().prDetailRecovery?.status).toEqual({ kind: 'waiting' })
 
-    direct.resolve({ kind: 'no-pr', fetchedAt: Date.now() })
+    direct.resolve({ kind: 'no-pr', fetchedAt: START_AT })
     await vi.advanceTimersByTimeAsync(15_000)
     expect(getPRForBranchOutcomeMock).toHaveBeenCalledTimes(2)
     expect(getPRForBranchOutcomeMock.mock.calls[1][4]).toBe(7)
@@ -178,7 +185,7 @@ describe('Checks detail recovery through the host coordinator', () => {
     getPRForBranchOutcomeMock.mockReturnValueOnce(recovery.promise).mockResolvedValueOnce({
       kind: 'found',
       pr: makePR({ number: 9, headSha: 'h2' }),
-      fetchedAt: Date.now()
+      fetchedAt: START_AT
     })
     const { store, cacheKey } = setup()
     store.getState().notePRDetailRecoveryPanelVisible(true)
@@ -195,7 +202,7 @@ describe('Checks detail recovery through the host coordinator', () => {
     recovery.resolve({
       kind: 'found',
       pr: makePR({ number: 8, headSha: 'h2' }),
-      fetchedAt: Date.now()
+      fetchedAt: START_AT
     })
     await vi.advanceTimersByTimeAsync(1_000)
     expect(store.getState().prCache[cacheKey]?.data?.number).toBe(9)

@@ -22,6 +22,8 @@ vi.mock('../../../../../github/api/rate-limit', () =>
 import { makePR } from '../../../../../github/pull-requests/refresh/pr-refresh-coordinator-test-harness'
 import type { RpcContext } from '../../../core'
 
+// The coordinator test reset pins fake time here.
+const START_AT = 1_000
 const { getPRForBranchOutcomeMock } = coordinatorMocks
 
 const identity = {
@@ -57,10 +59,14 @@ async function methods() {
       executionHostId: null
     })
   }
+  // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: these handlers read only runtime.resolvePRDetailRecoveryCandidate and the caller identity.
   const context = (clientId: string) => ({ runtime, clientId }) as unknown as RpcContext
   // oxlint-disable-next-line typescript/no-explicit-any -- each method's params differ; the schemas are tested elsewhere.
-  const call = (name: string, params: unknown, clientId = 'phone-1'): Promise<any> =>
-    byName[name].handler(params as never, context(clientId))
+  const call = (name: string, params: unknown, clientId = 'phone-1'): Promise<any> => {
+    const method = byName[name]
+    // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the method's own schema parses the params first, as the dispatcher does.
+    return method.handler(method.params.parse(params) as never, context(clientId))
+  }
   return { call }
 }
 
@@ -77,7 +83,7 @@ describe('github.prDetailRecovery runtime methods', () => {
     getPRForBranchOutcomeMock.mockResolvedValue({
       kind: 'found',
       pr: makePR({ number: 8 }),
-      fetchedAt: Date.now()
+      fetchedAt: START_AT
     })
     const { call } = await methods()
     const started = await call('github.prDetailRecovery.start', {

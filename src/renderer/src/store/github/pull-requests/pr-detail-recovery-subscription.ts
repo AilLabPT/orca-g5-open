@@ -80,7 +80,8 @@ export function terminalRecoveryStatus(
     case 'superseded':
     case 'cancelled':
       return { kind: 'closed' }
-    default:
+    case 'expired':
+    case 'not-admitted':
       return { kind: 'failed' }
   }
 }

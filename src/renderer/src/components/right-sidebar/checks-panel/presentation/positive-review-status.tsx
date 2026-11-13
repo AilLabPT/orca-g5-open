@@ -64,25 +64,31 @@ export function ChecksPanelPositiveReviewStatus({
             size="xs"
             variant="outline"
             aria-label={presentation.open.ariaLabel}
-            onClick={(event) => onOpen(event, presentation.open!.url)}
+            onClick={(event) => {
+              if (presentation.open) {
+                onOpen(event, presentation.open.url)
+              }
+            }}
           >
             {presentation.open.label}
           </Button>
         ) : null}
-        <Button
-          size="xs"
-          variant="outline"
-          // aria-disabled keeps keyboard focus on Retry while a read or rate gate blocks it.
-          aria-disabled={retryBlocked || undefined}
-          className={retryBlocked ? 'cursor-not-allowed opacity-50' : undefined}
-          onClick={() => {
-            if (!retryBlocked) {
-              onRetry()
-            }
-          }}
-        >
-          {t('auto.components.right.sidebar.ChecksPanel.review.retry', 'Retry')}
-        </Button>
+        {/* Dim through a wrapper: Button owns its own effects. */}
+        <span className={retryBlocked ? 'cursor-default opacity-50' : undefined}>
+          <Button
+            size="xs"
+            variant="outline"
+            // aria-disabled keeps keyboard focus on Retry while a read or rate gate blocks it.
+            aria-disabled={retryBlocked || undefined}
+            onClick={() => {
+              if (!retryBlocked) {
+                onRetry()
+              }
+            }}
+          >
+            {t('auto.components.right.sidebar.ChecksPanel.review.retry', 'Retry')}
+          </Button>
+        </span>
       </div>
     </>
   )

@@ -18,6 +18,8 @@ vi.mock('../../api/rate-limit', () => moduleMocks.rateLimitModuleMock(coordinato
 
 import { makeCandidate, makePR } from './pr-refresh-coordinator-test-harness'
 
+// The coordinator test reset pins fake time here.
+const START_AT = 1_000
 const { getPRForBranchOutcomeMock, repositoryRateLimitGuardMock } = coordinatorMocks
 const CALLER = { callerKey: 'ipc:1', windowId: 1 }
 const H1 = makeCandidate({
@@ -78,7 +80,7 @@ async function load() {
 }
 
 function noPR(): PRRefreshOutcome {
-  return { kind: 'no-pr', fetchedAt: Date.now() }
+  return { kind: 'no-pr', fetchedAt: START_AT }
 }
 
 describe('PR detail recovery tickets', () => {
@@ -95,7 +97,7 @@ describe('PR detail recovery tickets', () => {
     const predecessor = deferred<PRRefreshOutcome>()
     getPRForBranchOutcomeMock
       .mockReturnValueOnce(predecessor.promise)
-      .mockResolvedValueOnce({ kind: 'found', pr: makePR({ number: 8 }), fetchedAt: Date.now() })
+      .mockResolvedValueOnce({ kind: 'found', pr: makePR({ number: 8 }), fetchedAt: START_AT })
     api.enqueuePRRefresh(H1, 'active', 80, 1)
     const started = api.startPRDetailRecovery(CALLER, startArgs(1), H2)
     expect(started.phase).toBe('waiting-existing')
@@ -127,7 +129,7 @@ describe('PR detail recovery tickets', () => {
     getPRForBranchOutcomeMock.mockResolvedValue({
       kind: 'found',
       pr: makePR({ number: 7, state: 'merged' }),
-      fetchedAt: Date.now()
+      fetchedAt: START_AT
     })
     api.reportVisiblePRRefreshCandidates([H1], 1, 1)
     const started = api.startPRDetailRecovery(CALLER, startArgs(1), H2)
@@ -168,7 +170,7 @@ describe('PR detail recovery tickets', () => {
     expect((await api.snapshot(started.ticketId)).admitted).toBe(true)
 
     await api.refreshPRNow(H2, 'manual')
-    recoveryRead.resolve({ kind: 'found', pr: makePR({ number: 8 }), fetchedAt: Date.now() })
+    recoveryRead.resolve({ kind: 'found', pr: makePR({ number: 8 }), fetchedAt: START_AT })
     await vi.advanceTimersByTimeAsync(0)
     expect((await api.snapshot(started.ticketId)).terminal).toEqual({ kind: 'superseded' })
     expect(getPRForBranchOutcomeMock).toHaveBeenCalledTimes(2)
@@ -204,7 +206,7 @@ describe('PR detail recovery tickets', () => {
 
   it('waits for a host rate gate and then reads once with the original hint', async () => {
     const api = await load()
-    const resetAt = Date.now() + 60_000
+    const resetAt = START_AT + 60_000
     repositoryRateLimitGuardMock.mockReturnValue({ blocked: true, resetAt: resetAt / 1000 })
     getPRForBranchOutcomeMock.mockResolvedValue(noPR())
     const started = api.startPRDetailRecovery(CALLER, startArgs(1), H2)

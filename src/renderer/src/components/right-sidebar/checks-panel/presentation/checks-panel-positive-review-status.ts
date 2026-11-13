@@ -91,7 +91,9 @@ function chooseStatus(input: PositiveReviewStatusInput): StatusChoice {
     case 'resolved':
       // A completed read stays truthful; only a read happening now replaces it.
       return input.refresh?.status === 'in-flight' ? { kind: 'admitted' } : { kind: 'unusable' }
-    default:
+    case 'unsupported':
+    case 'closed':
+    case undefined:
       // Old hosts, superseded or Retry-owned recovery: the ordinary refresh state speaks.
       return ordinaryStatus(input.refresh) ?? { kind: 'not-loaded' }
   }
@@ -103,7 +105,13 @@ function failedText(
   t: Translate
 ): string {
   const provider = input.providerName
-  const hard = errorType ? HARD_ERROR_COPY[errorType as keyof typeof HARD_ERROR_COPY] : undefined
+  const hard =
+    errorType === 'auth' ||
+    errorType === 'permission' ||
+    errorType === 'repo_unavailable' ||
+    errorType === 'gh_unavailable'
+      ? HARD_ERROR_COPY[errorType]
+      : undefined
   if (hard) {
     return t(hard.title.key, hard.title.fallback, { provider })
   }

@@ -4,6 +4,7 @@ import {
 } from '../../../github/client/lookup/pr-for-branch-outcome'
 import type { GitHubRepositoryIdentity as GitHubOwnerRepo } from '../../../../shared/github/repositories/repository-identity'
 import type {
+  GitHubPRRefreshCandidate,
   GitHubPRRefreshReason,
   PRRefreshOutcome
 } from '../../../../shared/github/pull-requests/refresh/pull-request-refresh-types'
@@ -36,7 +37,6 @@ import type { HostedReviewExecutionOptions } from '../../../source-control/hoste
 import { createStackedHostedReview } from '../../../source-control/stacked-hosted-review-creation'
 import { guardWslUncPathAccess } from '../../../wsl/filesystem/wsl-unc-access-gate'
 import type { PRDetailRecoveryStartArgs } from '../../../../shared/github/pull-requests/refresh/pr-detail-recovery-contract'
-import type { GitHubPRRefreshCandidate } from '../../../../shared/github/pull-requests/refresh/pull-request-refresh-types'
 import { prDetailRecoveryCandidate } from '../../../github/pull-requests/refresh/pr-detail-recovery-candidate'
 
 type HostedReviewTargetArgs = { repoSelector: string; worktreeSelector?: string }
