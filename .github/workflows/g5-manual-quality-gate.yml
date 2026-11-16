@@ -1,0 +1,31 @@
+name: G5 manual quality gate (standard runner)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: g5-manual-quality-gate
+  cancel-in-progress: false
+jobs:
+  source-check:
+    if: github.repository == 'AilLabPT/orca-g5-open'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout public G5 source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify source lineage and change hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = "g5-1.4.246"
+          git cat-file -e 55ccff19ad4cd8ba28b6f3d2be798c1e626a2c2c^{commit}
+          test -f CODE_SIGNING_POLICY.md
+          test -f G5_PRIVACY_READINESS.md
+          test -f SIGNPATH_APPLICATION_DRAFT.md
+          node --check config/scripts/build-orcad-prebuilds.mjs
+          node --check config/scripts/build-orcad-template.mjs
+          echo 'SOURCE_GATE_OK'
