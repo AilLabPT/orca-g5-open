@@ -1,10 +1,6 @@
 name: G5 Windows QA installer smoke - disposable VM
 
 on:
-  push:
-    branches: [g5-security-wip-20261116]
-    paths:
-      - '.github/workflows/g5-windows-qa-install-smoke.yml'
   workflow_dispatch:
     inputs:
       qa_run_id:
@@ -12,13 +8,17 @@ on:
         type: string
         required: true
       expected_sha:
-        description: Authorized exact 40-character checked-out source SHA from successful QA packaging
+        description: Authorized exact 40-character checked-out source SHA
         type: string
         required: true
       expected_producer_head_sha:
-        description: Exact 40-character workflow commit of the authorized QA packaging run
+        description: Exact producing workflow commit SHA
         type: string
         required: true
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/g5-windows-qa-install-smoke.yml'
 
 permissions:
   contents: read
@@ -28,32 +28,30 @@ jobs:
   qa-installer-smoke:
     if: github.repository == 'AilLabPT/orca-g5-open' && github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
-    timeout-minutes: 25
+    timeout-minutes: 20
+    env:
+      QA_RUN: ${{ inputs.qa_run_id }}
+      SOURCE_SHA: ${{ inputs.expected_sha }}
+      PRODUCER_HEAD: ${{ inputs.expected_producer_head_sha }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Verify authorized producing workflow before artifact download
+      - name: Authorize producing workflow and exact G5 SHA
+        timeout-minutes: 3
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          QA_RUN_ID: ${{ inputs.qa_run_id }}
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
-          EXPECTED_PRODUCER_HEAD: ${{ inputs.expected_producer_head_sha }}
         run: |
           $ErrorActionPreference='Stop'
-          if($env:QA_RUN_ID -notmatch '^[0-9]{8,14}$' -or $env:EXPECTED_SHA -notmatch '^[a-f0-9]{40}$' -or
-             $env:EXPECTED_PRODUCER_HEAD -notmatch '^[a-f0-9]{40}$'){
-            throw 'Invalid QA provenance identifiers'
-          }
-          $run=(& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:QA_RUN_ID" |ConvertFrom-Json)
-          if($LASTEXITCODE -ne 0 -or -not $run){throw 'Could not read QA producing run'}
-          if($run.status -ne 'completed' -or $run.conclusion -ne 'success' -or
-             $run.path -ne '.github/workflows/g5-windows-qa-package.yml' -or
-             $run.head_branch -ne 'g5-security-wip-20261116' -or
-             $run.head_sha -ne $env:EXPECTED_PRODUCER_HEAD -or
-             $run.event -notin @('push','workflow_dispatch')){
-            throw 'QA installer provenance not authorized: producer workflow, branch, SHA or status mismatch'
-          }
-          Write-Host ('G5_AUTHORIZED_QA_PRODUCER='+$env:QA_RUN_ID+' SHA='+$env:EXPECTED_SHA)
-      - name: Fetch exact QA installer artifact
+          if($env:QA_RUN -notmatch '^[0-9]{8,14}$' -or
+             $env:SOURCE_SHA -notmatch '^[a-f0-9]{40}$' -or
+             $env:PRODUCER_HEAD -notmatch '^[a-f0-9]{40}$'){throw 'Invalid QA provenance selector'}
+          $r=(& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:QA_RUN"|ConvertFrom-Json)
+          if($LASTEXITCODE -ne 0 -or -not $r){throw 'QA run not accessible'}
+          if($r.workflow_id -ne 420899596 -or $r.status -ne 'completed' -or
+             $r.conclusion -ne 'success' -or $r.head_sha -ne $env:PRODUCER_HEAD -or
+             $r.head_branch -ne 'g5-security-wip-20261116' -or
+             $r.path -ne '.github/workflows/g5-windows-qa-package.yml' -or
+             $r.event -ne 'workflow_dispatch'){throw 'QA producing run provenance mismatch'}
+          Write-Host 'G5_QA_PRODUCER_APPROVED'
+      - name: Download QA installer from exact producing run
         uses: actions/download-artifact@v8
         with:
           run-id: ${{ inputs.qa_run_id }}
@@ -61,73 +59,95 @@ jobs:
           github-token: ${{ github.token }}
           name: g5-windows-qa-installer-test-signed
           path: qa-installer
-      - name: Check hash, QA-only signature and perform disposable installation
-        env:
-          EXPECTED_SHA: ${{ inputs.expected_sha }}
+      - name: Verify SHA256, embedded QA signer and source identity
+        timeout-minutes: 4
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $files=@(Get-ChildItem qa-installer -File -Filter '*TEST-SIGNED.exe')
-          if($files.Count -ne 1){throw 'QA installer absent or ambiguous'}
-          $exe=$files[0].FullName
-          $receipt=Get-Content 'qa-installer/qa-receipt.json' -Raw |ConvertFrom-Json
-          if($receipt.sourceCommit -ne $env:EXPECTED_SHA){throw 'Source commit mismatch in QA artifact'}
-          if($receipt.testSignatureOnly -ne $true -or $receipt.publicCodeSigningTrustVerified -ne $false){throw 'Incorrect QA signing classification'}
+          $proof=Join-Path $env:RUNNER_TEMP 'g5-qa-install'
+          New-Item -ItemType Directory -Force -Path $proof|Out-Null
+          $matches=@(Get-ChildItem 'qa-installer' -Filter '*TEST-SIGNED.exe' -File)
+          if($matches.Count -ne 1){throw 'QA installer absent or ambiguous'}
+          $exe=$matches[0].FullName
+          $r=Get-Content 'qa-installer/qa-receipt.json' -Raw|ConvertFrom-Json
+          if($r.sourceCommit -ne $env:SOURCE_SHA -or $r.testSignatureOnly -ne $true -or
+             $r.publicCodeSigningTrustVerified -ne $false){throw 'QA identity/authority mismatch'}
           $hash=(Get-FileHash -Algorithm SHA256 $exe).Hash
-          if($hash -ne $receipt.testSignedSha256){throw 'QA installer SHA256 mismatch'}
-          $sig=Get-AuthenticodeSignature -FilePath $exe
-          if(-not $sig.SignerCertificate -or $sig.SignerCertificate.Thumbprint -ne $receipt.signatureThumbprint){throw 'QA signature identity mismatch'}
-          # Establish cryptographic signature validity in this disposable VM only.
-          # Temporary local root trust is NOT public Code Signing trust.
-          $thumb=$sig.SignerCertificate.Thumbprint
-          $tempCert=Join-Path $env:RUNNER_TEMP 'g5-qa-ephemeral-public.cer'
-          [IO.File]::WriteAllBytes($tempCert,$sig.SignerCertificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-          try{
-            Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\Root|Out-Null
-            $checked=Get-AuthenticodeSignature -FilePath $exe
-            if($checked.Status -ne 'Valid'){throw ('QA signature cryptographic verification failed: '+$checked.Status)}
-          }finally{
-            Remove-Item -LiteralPath ('Cert:\CurrentUser\Root\'+$thumb) -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $tempCert -Force -ErrorAction SilentlyContinue
+          if($hash -ne $r.testSignedSha256){throw 'QA installer SHA-256 mismatch'}
+          $signature=Get-AuthenticodeSignature -FilePath $exe
+          if(-not $signature.SignerCertificate -or
+             $signature.SignerCertificate.Thumbprint -ne $r.signatureThumbprint){
+            throw 'Embedded QA signer mismatch'
           }
-          Write-Host 'G5_QA_SIGNATURE_CRYPTOGRAPHICALLY_VALID_WITH_TEMPORARY_LOCAL_TRUST_ONLY'
-          $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
-          if(Test-Path $installed){throw 'Expected a clean Windows runner without Orca installed'}
-          $p=Start-Process -FilePath $exe -ArgumentList '/S' -PassThru
+          [ordered]@{sourceCommit=$env:SOURCE_SHA;sha256=$hash;qaSigner=$signature.SignerCertificate.Subject;
+            signerThumbprint=$signature.SignerCertificate.Thumbprint;publicTrust=$false;
+            status='metadata-verified'}|ConvertTo-Json|
+            Set-Content -Encoding UTF8 (Join-Path $proof 'status.json')
+          Write-Host 'G5_QA_SIGNED_FILE_SHA_AND_PROVENANCE_PASS'
+      - name: Verify QA Authenticode integrity with disposable temporary trust
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $exe=@(Get-ChildItem 'qa-installer' -Filter '*TEST-SIGNED.exe' -File)[0].FullName
+          $sig=Get-AuthenticodeSignature $exe
+          $cert=$sig.SignerCertificate
+          $file=Join-Path $env:RUNNER_TEMP 'g5-qa-test-cert.cer'
+          [IO.File]::WriteAllBytes($file,$cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
           try{
-            # Wait for the installer PID only. PowerShell Start-Process -Wait can
-            # also wait on the Electron app's surviving descendant processes.
+            Import-Certificate -FilePath $file -CertStoreLocation Cert:\CurrentUser\Root|Out-Null
+            $v=Get-AuthenticodeSignature $exe
+            if($v.Status -ne 'Valid'){throw ('QA signature integrity invalid: '+$v.Status)}
+          }finally{
+            Remove-Item -LiteralPath ('Cert:\CurrentUser\Root\'+$cert.Thumbprint) -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $file -ErrorAction SilentlyContinue
+          }
+          Write-Host 'G5_QA_AUTHENTICODE_VALID_WITH_TEMPORARY_LOCAL_TRUST_ONLY'
+      - name: Install real signed QA NSIS in clean disposable runner
+        timeout-minutes: 6
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $existing=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
+          if(Test-Path $existing){throw 'Cannot install over pre-existing Orca'}
+          $exe=@(Get-ChildItem 'qa-installer' -Filter '*TEST-SIGNED.exe' -File)[0].FullName
+          Write-Host 'G5_QA_NSIS_START'
+          $p=Start-Process $exe -ArgumentList '/S' -PassThru
+          try{
             if(-not $p.WaitForExit(180000)){
               Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-              throw 'QA NSIS installer process exceeded 180-second deadline'
+              throw 'QA installer parent PID did not exit within 180 seconds'
             }
-            if($p.ExitCode -ne 0){throw "QA installer failed with exit code $($p.ExitCode)"}
+            if($p.ExitCode -ne 0){throw ('QA NSIS installer exit code: '+$p.ExitCode)}
           }finally{$p.Dispose()}
-          $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
-          $found=$false
-          for($i=0;$i -lt 60;$i++){
-            if(Test-Path $installed){$found=$true;break}
-            Start-Sleep -Seconds 1
-          }
-          if(-not $found){throw 'QA Orca executable absent after installation'}
-          $proof=[ordered]@{
-            sourceCommit=$receipt.sourceCommit
-            setupSha256=$hash
-            testSignatureOnly=$true
-            temporaryLocalTrustUsedForSignatureValidation=$true
-            publicTrustVerified=$false
-            installerExitCode=$p.ExitCode
-            applicationInstalled=$true
-            signingReviewerGO=$false
-            productionAuthorized=$false
-          }
-          $proof|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $env:RUNNER_TEMP 'g5-qa-install-proof.json')
-          Write-Host 'G5_QA_INSTALL_SMOKE_PASS'
-      - name: Upload installer smoke receipt
+          Write-Host 'G5_QA_NSIS_PARENT_EXIT_OK'
+      - name: Verify newly installed application executable
+        timeout-minutes: 3
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $target=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
+          for($i=0;$i -lt 60 -and -not(Test-Path $target);$i++){Start-Sleep -Seconds 1}
+          if(-not(Test-Path $target)){throw 'QA app executable not installed'}
+          $data=Get-Content (Join-Path $env:RUNNER_TEMP 'g5-qa-install/status.json') -Raw |ConvertFrom-Json
+          if($data.sourceCommit -ne $env:SOURCE_SHA){throw 'QA installed source mismatch'}
+          $v=[Diagnostics.FileVersionInfo]::GetVersionInfo($target)
+          [ordered]@{
+            sourceCommit=$env:SOURCE_SHA
+            setupSha256=$data.sha256
+            installedExeSha256=(Get-FileHash -Algorithm SHA256 $target).Hash
+            installedExeVersion=$v.FileVersion
+            actualNSISInstallPassed=$true
+            QAOnlyTestSignature=$true
+            publiclyTrustedSigning=$false
+            productionGO=$false
+          } |ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $env:RUNNER_TEMP 'g5-qa-install/status.json')
+          Write-Host 'G5_QA_ISOLATED_INSTALL_PASS'
+      - name: Upload QA install evidence and phase receipts
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: g5-windows-qa-install-receipt
-          path: ${{ runner.temp }}/g5-qa-install-proof.json
+          path: ${{ runner.temp }}/g5-qa-install/
           if-no-files-found: warn
-          retention-days: 2
+          retention-days: 3
