@@ -126,7 +126,7 @@ jobs:
                 throw 'Baseline QA package version mismatch'
               }
               $peVersion=([Diagnostics.FileVersionInfo]::GetVersionInfo($exe)).FileVersion
-              if($peVersion -notmatch ('^'+[regex]::Escape($info.version.Split('-')[0])+ '(?:\.|$)')){
+              if($peVersion -notmatch ('^'+[regex]::Escape($info.version)+ '(?:\.|$)')){
                 throw ('Windows installer PE version mismatch: '+$peVersion)
               }
               if((Get-FileHash -Algorithm SHA256 $exe).Hash -ne $receipt.testSignedSha256){
