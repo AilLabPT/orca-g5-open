@@ -11,7 +11,7 @@ import { readPinnedG5DockerContainerId } from './orcad-g5-docker-preflight'
 
 const pinned='c'.repeat(64)
 const container='g5-isolated'
-const image='sha256:'+'a'.repeat(64)
+const image=`sha256:${'a'.repeat(64)}`
 const config={
   conn: unusedOrcadHostTransport(),
   host: getRemoteHostPlatform('win32-x64'),
@@ -32,6 +32,24 @@ beforeEach(()=>{
   command.mockReset().mockResolvedValue(JSON.stringify(status))
 })
 describe('G5 immutable Docker read-only preflight',()=>{
+  it.each([
+    { name: 'invalid digest', override: { expectedImageId: 'sha256:bad' } },
+    { name: 'unsafe container', override: { container: 'unsafe;name' } },
+    { name: 'unsafe adapter path', override: { adapterPath: 'C:\\bad%path\\adapter.ps1' } },
+    { name: 'relative adapter path', override: { adapterPath: 'adapter.ps1' } }
+  ])('rejects $name before the first remote command', async ({override}) => {
+    await expect(readPinnedG5DockerContainerId({
+      ...config,
+      g5Docker: {...config.g5Docker, ...override}
+    }, coordination)).rejects.toThrow()
+    expect(command).not.toHaveBeenCalled()
+  })
+  it('rejects a missing owner token before the first remote command', async () => {
+    await expect(readPinnedG5DockerContainerId(config, {
+      ...coordination, ownerToken: ''
+    })).rejects.toThrow('authority')
+    expect(command).not.toHaveBeenCalled()
+  })
   it('observes a healthy pinned container before mutation with no Apply',async()=>{
     await expect(readPinnedG5DockerContainerId(config,coordination)).resolves.toBe(pinned)
     expect(command).toHaveBeenCalledTimes(1)
@@ -48,7 +66,7 @@ describe('G5 immutable Docker read-only preflight',()=>{
     {containerId:'d'.repeat(64),network:'bridge'},
     {healthy:false},
     {fallback:false},
-    {image:'sha256:'+'b'.repeat(64)},
+    {image:`sha256:${'b'.repeat(64)}`},
     {protocolVersion:0}
   ])('fails closed on invalid Docker preflight evidence %#',async(override)=>{
     command.mockResolvedValueOnce(JSON.stringify({...status,...override}))

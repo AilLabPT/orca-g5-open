@@ -31,9 +31,22 @@ function Get-G5ContainerLockName {
   finally { $sha.Dispose() }
   return '.g5-container-' + $digest.Substring(0,24) + '.lock'
 }
+function Assert-G5NoReparse([string]$PathValue) {
+  $current = [IO.Path]::GetFullPath($PathValue)
+  while ($true) {
+    $entry = Get-Item -LiteralPath $current -ErrorAction Stop
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'G5 coordination reparse point forbidden'
+    }
+    $parent = [IO.Path]::GetDirectoryName($current.TrimEnd([char]92))
+    if ([String]::IsNullOrWhiteSpace($parent) -or $parent -eq $current) { break }
+    $current = $parent
+  }
+}
 function Assert-G5CoordinationOwner {
   if (-not $Script:OwnerLock) { return }
   $ownerPath = Join-Path $Script:OwnerLock '.orca-fence-owner'
+  Assert-G5NoReparse $ownerPath
   if (-not [IO.File]::Exists($ownerPath)) { throw 'G5 coordination lock owner missing' }
   $owner = [IO.File]::ReadAllText($ownerPath).Trim()
   if ($owner -cne $Script:HeldToken) { throw 'G5 coordination owner superseded' }
@@ -63,13 +76,7 @@ function Initialize-G5Coordination {
   if ($parts -contains '.' -or $parts -contains '..') {
     throw 'G5 coordination path traversal forbidden'
   }
-  foreach ($location in @($canonicalRoot, $canonicalPath,
-                           (Join-Path $canonicalPath '.orca-fence-owner'))) {
-    $entry = Get-Item -LiteralPath $location -ErrorAction Stop
-    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-      throw 'G5 coordination reparse point forbidden'
-    }
-  }
+  Assert-G5NoReparse (Join-Path $canonicalPath '.orca-fence-owner')
   if ($OwnerToken -notmatch '^[a-f0-9-]{36}$') { throw 'Invalid G5 owner token' }
   $Script:OwnerLock = $CoordinationLock
   $Script:HeldToken = $OwnerToken

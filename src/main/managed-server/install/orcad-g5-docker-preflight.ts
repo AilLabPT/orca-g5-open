@@ -20,6 +20,24 @@ export async function readPinnedG5DockerContainerId(
     throw new Error('G5 Docker preflight requires a Windows host')
   }
   const config = options.g5Docker
+  // This is the FIRST remote command in G5 reconciliation: reject unsafe
+  // configuration before invoking PowerShell, not only before Docker Ensure.
+  if (!/^sha256:[a-f0-9]{64}$/u.test(config.expectedImageId)) {
+    throw new Error('G5 Docker image identity missing or invalid')
+  }
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(config.container)) {
+    throw new Error('G5 Docker container name invalid')
+  }
+  const unsafe = (s: string): boolean =>
+    ['%', '$', '`', '"', '\n', '\r'].some((char) => s.includes(char))
+  if (!/^[A-Za-z]:\\/u.test(config.adapterPath) ||
+      !config.adapterPath.toLowerCase().endsWith('.ps1') ||
+      unsafe(config.adapterPath) ||
+      !/^[A-Za-z]:[\\/]/u.test(coordination.lockDir) ||
+      unsafe(coordination.lockDir) ||
+      !/^[a-f0-9-]{36}$/u.test(coordination.ownerToken)) {
+    throw new Error('G5 Docker preflight Windows authority configuration invalid')
+  }
   const command = orcadWindowsNodeCommandLine('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-File', config.adapterPath,
     '-Action', 'Status', '-Container', config.container,
