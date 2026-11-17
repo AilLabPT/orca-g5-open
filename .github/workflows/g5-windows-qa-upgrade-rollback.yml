@@ -1,0 +1,182 @@
+name: G5 Windows QA NSIS upgrade and rollback - disposable CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_run:
+        description: Successful QA producer run ID for baseline 1.4.246
+        type: string
+        required: true
+      candidate_run:
+        description: Successful QA producer run ID for experimental 1.4.247-g5qa.1
+        type: string
+        required: true
+      baseline_workflow_sha:
+        description: Exact approved producer workflow head SHA for baseline
+        type: string
+        required: true
+      candidate_workflow_sha:
+        description: Exact approved producer workflow head SHA for candidate
+        type: string
+        required: true
+      source_sha:
+        description: Exact qualified G5 source commit SHA for both packages
+        type: string
+        required: true
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/g5-windows-qa-upgrade-rollback.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  installer-lifecycle:
+    if: github.repository == 'AilLabPT/orca-g5-open' && github.event_name == 'workflow_dispatch'
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      BASELINE_RUN: ${{ inputs.baseline_run }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      BASELINE_HEAD: ${{ inputs.baseline_workflow_sha }}
+      CANDIDATE_HEAD: ${{ inputs.candidate_workflow_sha }}
+      ORCA_BACKGROUND_LAUNCH: '1'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source_sha }}
+          persist-credentials: false
+      - name: Fail closed on producer identity, status and source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:SOURCE_SHA -notmatch '^[a-f0-9]{40}$'){throw 'Invalid source SHA'}
+          if((git rev-parse HEAD).Trim() -ne $env:SOURCE_SHA){throw 'Source checkout mismatch'}
+          foreach($spec in @(
+            @{run=$env:BASELINE_RUN;head=$env:BASELINE_HEAD;label='baseline'},
+            @{run=$env:CANDIDATE_RUN;head=$env:CANDIDATE_HEAD;label='candidate'}
+          )){
+            if($spec.run -notmatch '^[0-9]{8,14}$' -or $spec.head -notmatch '^[a-f0-9]{40}$'){
+              throw 'Invalid source producer selectors'
+            }
+            $r=(& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$($spec.run)"|ConvertFrom-Json)
+            if($LASTEXITCODE -ne 0 -or -not $r){throw 'Producer unavailable'}
+            if($r.workflow_id -ne 420899596 -or $r.status -ne 'completed' -or
+               $r.conclusion -ne 'success' -or $r.head_sha -ne $spec.head -or
+               $r.head_branch -ne 'g5-security-wip-20261116' -or
+               $r.path -ne '.github/workflows/g5-windows-qa-package.yml' -or
+               $r.event -ne 'workflow_dispatch'){
+              throw ('Unauthorized '+$spec.label+' QA producer')
+            }
+          }
+          if($env:BASELINE_RUN -eq $env:CANDIDATE_RUN){throw 'Distinct QA producers required'}
+          Write-Host 'G5_QA_PRODUCERS_AUTHORIZED'
+      - name: Download exact baseline QA artifact
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ inputs.baseline_run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          name: g5-windows-qa-installer-test-signed
+          path: qa-base
+      - name: Download exact candidate QA artifact
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ inputs.candidate_run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          name: g5-windows-qa-installer-test-signed
+          path: qa-next
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          cache-pnpm-store: 'false'
+      - name: Exercise real NSIS upgrade and downgrade with QA-only packages
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:RUNNER_TEMP 'g5-qa-lifecycle'
+          New-Item -ItemType Directory -Force -Path $root|Out-Null
+          $trusted=@()
+          try{
+            $items=@()
+            foreach($info in @(
+              @{dir='qa-base';version='1.4.246';synthetic=$false},
+              @{dir='qa-next';version='1.4.247-g5qa.1';synthetic=$true}
+            )){
+              $receipt=Get-Content (Join-Path $info.dir 'qa-receipt.json') -Raw|ConvertFrom-Json
+              $matches=@(Get-ChildItem $info.dir -File -Filter '*TEST-SIGNED.exe')
+              if($matches.Count -ne 1){throw 'QA installer missing or ambiguous'}
+              $exe=$matches[0].FullName
+              if($receipt.sourceCommit -ne $env:SOURCE_SHA -or
+                 $receipt.testSignatureOnly -ne $true -or
+                 $receipt.publicCodeSigningTrustVerified -ne $false){
+                throw 'QA installer receipt identity mismatch'
+              }
+              # The baseline was produced before qaBuildVersion was added to receipts.
+              # Its exact provenance SHA fixes that older format; verify PE version too.
+              if($info.synthetic){
+                if($receipt.qaBuildVersion -ne $info.version -or $receipt.qaSyntheticVersion -ne $true){
+                  throw 'Synthetic candidate QA package version mismatch'
+                }
+              }elseif($receipt.qaBuildVersion -and $receipt.qaBuildVersion -ne $info.version){
+                throw 'Baseline QA package version mismatch'
+              }
+              $peVersion=([Diagnostics.FileVersionInfo]::GetVersionInfo($exe)).FileVersion
+              if($peVersion -notmatch ('^'+[regex]::Escape($info.version.Split('-')[0])+ '(?:\.|$)')){
+                throw ('Windows installer PE version mismatch: '+$peVersion)
+              }
+              if((Get-FileHash -Algorithm SHA256 $exe).Hash -ne $receipt.testSignedSha256){
+                throw 'QA installer hash mismatch'
+              }
+              $sign=Get-AuthenticodeSignature $exe
+              if(-not $sign.SignerCertificate -or $sign.SignerCertificate.Thumbprint -ne $receipt.signatureThumbprint){
+                throw 'QA signer mismatch'
+              }
+              $thumb=$sign.SignerCertificate.Thumbprint
+              $path=Join-Path $root ($thumb+'.cer')
+              [IO.File]::WriteAllBytes($path,$sign.SignerCertificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+              Import-Certificate -FilePath $path -CertStoreLocation Cert:\CurrentUser\Root |Out-Null
+              $trusted+= $thumb
+              if((Get-AuthenticodeSignature $exe).Status -ne 'Valid'){throw 'QA Authenticode integrity failed'}
+              $items+= $exe
+            }
+            $localInstall=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
+            if(Test-Path $localInstall){throw 'Disposable runner contains a pre-existing Orca install'}
+            # Existing product harness performs real silent NSIS install/upgrade and
+            # checks daemon/session behavior, interactivity and window flash.
+            $from=$items[0];$to=$items[1]
+            & node tests/tools/win-update-e2e/run.mjs --from $from --to $to --expect cold-restore --soak-seconds 25 2>&1 |
+              Tee-Object -FilePath (Join-Path $root 'upgrade.log')
+            if($LASTEXITCODE -ne 0){throw 'Real QA installer upgrade failed'}
+            & node tests/tools/win-update-e2e/run.mjs --from $to --to $from --expect cold-restore --soak-seconds 25 2>&1 |
+              Tee-Object -FilePath (Join-Path $root 'rollback.log')
+            if($LASTEXITCODE -ne 0){throw 'Real QA installer downgrade/rollback failed'}
+            [ordered]@{
+              sourceCommit=$env:SOURCE_SHA
+              baselineBuild='1.4.246'
+              candidateBuild='1.4.247-g5qa.1'
+              syntheticVersionOnly=$true
+              realNsisUpgradePassed=$true
+              realNsisRollbackPassed=$true
+              testedG5DockerUpdater=$false
+              publiclyTrustedSigning=$false
+              productionGO=$false
+            }|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $root 'qa-lifecycle-receipt.json')
+            Write-Host 'G5_REAL_QA_NSIS_UPGRADE_AND_ROLLBACK_PASS'
+          }finally{
+            foreach($thumb in $trusted|Select-Object -Unique){
+              Remove-Item -LiteralPath ('Cert:\CurrentUser\Root\'+$thumb) -ErrorAction SilentlyContinue
+            }
+          }
+      - name: Upload scoped QA lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: g5-qa-nsis-upgrade-rollback-proof
+          path: ${{ runner.temp }}/g5-qa-lifecycle/
+          if-no-files-found: warn
+          retention-days: 3
