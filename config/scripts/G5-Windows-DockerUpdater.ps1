@@ -19,7 +19,7 @@ $Script:HeldToken = ''
 $Script:ContainerIdentity = ''
 
 function Test-SafeWindowsPath([string]$PathValue) {
-  if ($PathValue -notmatch '^[A-Za-z]:\\' -or
+  if ($PathValue -notmatch '^[A-Za-z]:[\\/]' -or
       $PathValue.IndexOfAny([char[]]@('%', '$', '`', '"', [char]10, [char]13)) -ge 0) {
     throw 'Unsafe G5 coordination path'
   }
@@ -56,6 +56,19 @@ function Initialize-G5Coordination {
   if (-not [String]::Equals($realPath, $canonicalPath,
                             [StringComparison]::OrdinalIgnoreCase)) {
     throw 'G5 coordination lock must use the canonical native host namespace'
+  }
+  # Reject ambiguous dot segments and reparse points. A lexical canonical
+  # comparison alone cannot establish authority through a Windows junction.
+  $parts = @($CoordinationLock -split '[\\/]')
+  if ($parts -contains '.' -or $parts -contains '..') {
+    throw 'G5 coordination path traversal forbidden'
+  }
+  foreach ($location in @($canonicalRoot, $canonicalPath,
+                           (Join-Path $canonicalPath '.orca-fence-owner'))) {
+    $entry = Get-Item -LiteralPath $location -ErrorAction Stop
+    if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+      throw 'G5 coordination reparse point forbidden'
+    }
   }
   if ($OwnerToken -notmatch '^[a-f0-9-]{36}$') { throw 'Invalid G5 owner token' }
   $Script:OwnerLock = $CoordinationLock
