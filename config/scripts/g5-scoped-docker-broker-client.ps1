@@ -19,7 +19,7 @@ public static class G5PipeServerIdentity {
   public static extern bool GetNamedPipeServerProcessId(SafePipeHandle pipe, out uint serverPid);
 }
 '@
-$pipe=[IO.Pipes.NamedPipeClientStream]::new('.',$PipeName,[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::None)
+$pipe=[IO.Pipes.NamedPipeClientStream]::new('.',$PipeName,[IO.Pipes.PipeDirection]::InOut,[IO.Pipes.PipeOptions]::Asynchronous,[Security.Principal.TokenImpersonationLevel]::Identification)
 try{
   $pipe.Connect($TimeoutMs)
   [uint32]$remotePid=0

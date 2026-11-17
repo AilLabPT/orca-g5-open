@@ -36,6 +36,18 @@ if(-not $UseFixture){
   if(-not(Test-Path -LiteralPath $dockerExe -PathType Leaf)){throw 'G5_BROKER_PINNED_DOCKER_EXECUTABLE_MISSING'}
   $file=Get-Item -LiteralPath $dockerExe -Force
   if(($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'G5_BROKER_DOCKER_REPARSE_FORBIDDEN'}
+  # The Skrog context is expected to be local npipe transport, never TCP/SSH.
+  $beforePreference=$ErrorActionPreference
+  try{
+    $ErrorActionPreference='Continue'
+    $endpointOutput=& $dockerExe context inspect skrog --format '{{.Endpoints.docker.Host}}' 2>&1
+    $endpointExitCode=$LASTEXITCODE
+  }finally{$ErrorActionPreference=$beforePreference}
+  $contextEndpoint=($endpointOutput|Out-String).Trim()
+  if($endpointExitCode -ne 0 -or $contextEndpoint -cnotin @(
+    'npipe:////./pipe/docker_engine','npipe:////./pipe/skrog_engine')){
+    throw 'G5_BROKER_UNTRUSTED_DOCKER_CONTEXT_ENDPOINT'
+  }
 }
 for($n=0;$n -lt $MaxRequests;$n++){
   $pipe=New-Object IO.Pipes.NamedPipeServerStream -ArgumentList @(

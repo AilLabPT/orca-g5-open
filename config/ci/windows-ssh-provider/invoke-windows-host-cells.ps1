@@ -25,7 +25,7 @@ $priorBackground=$env:ORCA_BACKGROUND_LAUNCH
 $failed=[Collections.Generic.List[string]]::new()
 $summary=[Collections.Generic.List[hashtable]]::new()
 
-function Invoke-PrivateSsh([string]$Account,[string]$Command,[switch]$RequireSuccess) {
+function Invoke-PrivateSsh([string]$Account,[string]$Command,[switch]$RequireSuccess,[switch]$ReturnDetails) {
   $start=[Diagnostics.ProcessStartInfo]::new($Context.sshExe)
   $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
   foreach($argument in @('-F','NUL','-T','-p',[string]$Context.port,'-i',$Context.identityFile,'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o',"UserKnownHostsFile=$($Context.knownHosts)",'-o','ConnectTimeout=5',"$Account@127.0.0.1",$Command)){$start.ArgumentList.Add($argument)}
@@ -33,7 +33,8 @@ function Invoke-PrivateSsh([string]$Account,[string]$Command,[switch]$RequireSuc
   try {
     $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
     if(-not $process.WaitForExit(30000)){$process.Kill($true);throw 'Private SSH probe deadline exceeded'}
-    $value=$stdout.GetAwaiter().GetResult();$null=$stderr.GetAwaiter().GetResult()
+    $value=$stdout.GetAwaiter().GetResult();$errorText=$stderr.GetAwaiter().GetResult()
+    if($ReturnDetails){return [pscustomobject]@{exitCode=$process.ExitCode;stdout=$value;stderr=$errorText}}
     if($RequireSuccess -and $process.ExitCode -ne 0){
       throw "Private SSH command rejected under actual account $Account (exit $($process.ExitCode))"
     }
@@ -127,20 +128,40 @@ try {
       }
       if($env:ORCA_G5_SCOPED_BROKER_PROBE -eq '1'){
         # The standard SSH principal must NOT gain unrestricted Docker access.
-        $directDenied=$false
-        try{
-          $null=Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess
-        }catch{
-          if($_.Exception.Message -match '^Private SSH command rejected under actual account '){
-            $directDenied=$true
-          }else{throw}
+        # Prove ACL denial at the SAME Skrog daemon endpoint the broker uses,
+        # not merely a nonzero exit from PATH resolution or a missing user context.
+        $dockerExe=Join-Path $env:WINDIR 'System32\docker.exe'
+        if(-not(Test-Path -LiteralPath $dockerExe -PathType Leaf)){
+          throw 'Pinned Docker CLI missing; direct ACL refusal cannot be tested'
         }
-        if(-not $directDenied){throw 'G5 SSH principal has unrestricted Docker access; refused broker qualification'}
+        $endpoint=(& $dockerExe context inspect skrog --format '{{.Endpoints.docker.Host}}'|Out-String).Trim()
+        if($LASTEXITCODE -ne 0 -or $endpoint -cnotin @(
+           'npipe:////./pipe/docker_engine','npipe:////./pipe/skrog_engine')){
+          throw 'Expected local Skrog endpoint not available for scoped SSH ACL check'
+        }
+        $directCommand='"'+$dockerExe+'" -H '+$endpoint+' info --format "{{.OSType}}"'
+        $direct=Invoke-PrivateSsh $account.name $directCommand -ReturnDetails
+        if($direct.exitCode -eq 0){throw 'Unprivileged SSH account has broad direct Docker access'}
+        if(($direct.stdout+$direct.stderr) -notmatch '(?i)(access is denied|access denied|access denied|permission denied|acesso negado)'){
+          throw 'Direct Docker failed for an unverified reason, not a proven endpoint ACL refusal'
+        }
+        $directAclDenied=$true
         $pipeName='g5-'+[guid]::NewGuid().ToString('N').Substring(0,16)
         $serverScript=Join-Path $SourceRoot 'config/scripts/g5-scoped-docker-broker.ps1'
         $clientScript=Join-Path $SourceRoot 'config/scripts/g5-scoped-docker-broker-client.ps1'
         foreach($scriptPath in @($serverScript,$clientScript)){
           if(-not(Test-Path -LiteralPath $scriptPath)){throw 'Required G5 broker script missing'}
+        }
+        # On this disposable runner, explicitly prevent the SSH user from
+        # replacing privileged broker code or its containing directories.
+        # A deny-write ACE targets only the ephemeral account's exact SID.
+        foreach($protected in @($SourceRoot,
+            (Join-Path $SourceRoot 'config'),
+            (Join-Path $SourceRoot 'config/scripts'),
+            $serverScript,$clientScript)){
+          $aclArg='*'+$account.sid+':(W)'
+          & icacls.exe $protected '/deny' $aclArg | Out-Null
+          if($LASTEXITCODE -ne 0){throw 'Could not protect G5 broker code from SSH account writes'}
         }
         $logBase=Join-Path $ReceiptRoot ($cell+'.broker')
         $serverProcess=Start-Process powershell.exe -ArgumentList @(
@@ -159,7 +180,7 @@ try {
             throw 'G5 scoped broker did not terminate cleanly'
           }
           $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshPrincipalSid=$account.sid;
-            directDockerAccessDenied=$true;scopedBrokerReadOnlyLinux=$true;
+            directSkrogPipeAclDenialVerified=$directAclDenied;scopedBrokerReadOnlyLinux=$true;
             fullG5RemoteInstallerQualified=$false})
           Write-Host ('G5_SSH_SCOPED_READ_ONLY_BROKER_PASS cell='+$cell)
         }finally{

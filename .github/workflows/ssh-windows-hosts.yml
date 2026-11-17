@@ -61,6 +61,7 @@ on:
       - 'tests/e2e/helpers/compiled-orca-cli.ts'
       - 'tests/e2e/helpers/windows-host-orcad-processes.ts'
       - 'config/ci/windows-ssh-provider/**'
+      - 'config/scripts/g5-scoped-docker-broker*.ps1'
       - 'config/ci/windows-lifecycle-receipt.ps1'
       - '.github/workflows/ssh-windows-hosts.yml'
       - '.github/actions/prepare-orcad-prebuilds/**'
@@ -168,6 +169,10 @@ jobs:
             resources
             tests
             src
+      - name: Enforce scoped broker pilot prerequisite
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_scoped_broker_probe && !inputs.g5_linux_docker }}
+        shell: pwsh
+        run: throw 'G5 scoped broker probe requires isolated Linux Docker runner'
       - name: Test G5 Docker runtime isolation rules before preparing the SSH host
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
         shell: pwsh
