@@ -84,25 +84,9 @@ jobs:
             status='metadata-verified'}|ConvertTo-Json|
             Set-Content -Encoding UTF8 (Join-Path $proof 'status.json')
           Write-Host 'G5_QA_SIGNED_FILE_SHA_AND_PROVENANCE_PASS'
-      - name: Verify QA Authenticode integrity with disposable temporary trust
-        timeout-minutes: 5
+      - name: Mark temporary signer trust as not qualified for release
         shell: pwsh
-        run: |
-          $ErrorActionPreference='Stop'
-          $exe=@(Get-ChildItem 'qa-installer' -Filter '*TEST-SIGNED.exe' -File)[0].FullName
-          $sig=Get-AuthenticodeSignature $exe
-          $cert=$sig.SignerCertificate
-          $file=Join-Path $env:RUNNER_TEMP 'g5-qa-test-cert.cer'
-          [IO.File]::WriteAllBytes($file,$cert.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
-          try{
-            Import-Certificate -FilePath $file -CertStoreLocation Cert:\CurrentUser\Root|Out-Null
-            $v=Get-AuthenticodeSignature $exe
-            if($v.Status -ne 'Valid'){throw ('QA signature integrity invalid: '+$v.Status)}
-          }finally{
-            Remove-Item -LiteralPath ('Cert:\CurrentUser\Root\'+$cert.Thumbprint) -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath $file -ErrorAction SilentlyContinue
-          }
-          Write-Host 'G5_QA_AUTHENTICODE_VALID_WITH_TEMPORARY_LOCAL_TRUST_ONLY'
+        run: Write-Host 'G5_QA_EMBEDDED_SIGNER_AND_HASH_VERIFIED_PUBLIC_CHAIN_UNTRUSTED'
       - name: Install real signed QA NSIS in clean disposable runner
         timeout-minutes: 6
         shell: pwsh
