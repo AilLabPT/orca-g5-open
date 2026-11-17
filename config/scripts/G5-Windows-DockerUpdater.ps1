@@ -157,7 +157,27 @@ function Get-G5Readiness {
       try {
         $actual=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'sh','-c',
           ('ps -o args= -p '+$pidValue))) -join ' '
-        $healthy=$actual.Contains($path)
+        if ($actual.Contains($path)) {
+          $socketMatch=[regex]::Match($actual,'(?:^|\s)--socket\s+([^\s]+)')
+          $tokenMatch=[regex]::Match($actual,'(?:^|\s)--token\s+([^\s]+)')
+          if ($socketMatch.Success -and $tokenMatch.Success) {
+            $probeFile=Join-Path $PSScriptRoot 'g5-live-pty-probe.py'
+            if (-not [IO.File]::Exists($probeFile)) {
+              throw 'G5 live PTY probe is missing'
+            }
+            $encoded=[Convert]::ToBase64String([IO.File]::ReadAllBytes($probeFile))
+            $runner="import base64;exec(compile(base64.b64decode('$encoded'),'<health>','exec'))"
+            $reply=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'python3','-c',
+              $runner,$socketMatch.Groups[1].Value,$tokenMatch.Groups[1].Value))
+            $jsonLines=@($reply | Where-Object { ([string]$_).Trim().StartsWith('{') })
+            if ($jsonLines.Count -eq 1) {
+              $verified=$jsonLines[0] | ConvertFrom-Json
+              $healthy=$verified.healthy -eq $true -and
+                $verified.protocolVersion -eq 54 -and
+                $verified.coverage -eq 'pty-spawn'
+            }
+          }
+        }
       } catch { $healthy=$false }
     }
   }
