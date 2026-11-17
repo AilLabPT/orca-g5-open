@@ -1,0 +1,61 @@
+name: G5 Windows WSL2 Linux Docker pilot
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/g5-windows-wsl2-docker-pilot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  linux-docker-windows:
+    if: github.repository == 'AilLabPT/orca-g5-open'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Prepare evidence directory
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path (Join-Path $env:RUNNER_TEMP 'g5-wsl2-pilot') | Out-Null
+      - name: Install version-pinned Docker Linux engine in disposable Windows runner
+        uses: wslkit/setup-skrog@cd2cba80924975b0c77217947c228da8aac17b1f
+        with:
+          version: '0.11.0'
+          wait: 3m
+      - name: Verify actual Linux Docker operation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:RUNNER_TEMP 'g5-wsl2-pilot'
+          $os=(& docker info --format '{{.OSType}}').Trim()
+          if($LASTEXITCODE -ne 0 -or $os -ne 'linux'){throw 'Linux Docker not available'}
+          $container=(& docker run --rm --network none alpine:3.20 sh -c 'printf G5_LINUX_DOCKER_EXEC_OK')
+          if($LASTEXITCODE -ne 0 -or ($container | Out-String).Trim() -ne 'G5_LINUX_DOCKER_EXEC_OK'){
+            throw 'Linux Docker container execution failed'
+          }
+          $result=[ordered]@{
+            sourceCommit=$env:GITHUB_SHA
+            runnerOS=$env:RUNNER_OS
+            dockerServerOS=$os
+            linuxContainerExecuted=$true
+            sshClientPresent=[bool](Get-Command ssh.exe -ErrorAction SilentlyContinue)
+            skrogVersion='0.11.0'
+            actionCommit='cd2cba80924975b0c77217947c228da8aac17b1f'
+            sshServerQualified=$false
+            fullG5InstallerQualified=$false
+          }
+          $result|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $root 'receipt.json')
+          Write-Host 'G5_WINDOWS_LINUX_DOCKER_PILOT_PASS'
+      - name: Upload scoped evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: g5-windows-wsl2-linux-docker-pilot
+          path: ${{ runner.temp }}/g5-wsl2-pilot/
+          if-no-files-found: warn
+          retention-days: 7
