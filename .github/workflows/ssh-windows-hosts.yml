@@ -9,6 +9,13 @@ on:
     branches: [g5-security-wip-20261116]
     paths:
       - '.github/workflows/ssh-windows-hosts.yml'
+      - 'config/scripts/g5-scoped-docker-broker*.ps1'
+      - 'config/scripts/G5-Windows-DockerUpdater.ps1'
+      - 'config/scripts/g5-live-pty-probe.py'
+      - 'config/scripts/test-g5-docker-isolation.ps1'
+      - 'config/ci/windows-ssh-provider/**'
+      - 'src/main/managed-server/install/orcad-g5-*.ts'
+      - 'src/main/managed-server/install/orcad-remote-install.ts'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths:
@@ -135,9 +142,9 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker) &&
+          ${{ fromJSON((github.event_name == 'push' || inputs.g5_linux_docker) &&
           '[{"arch":"x64","runner":"windows-latest","server":"inbox"}]' ||
-          (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.g5_x64_only)) &&
+          github.event_name == 'workflow_dispatch' && inputs.g5_x64_only &&
           '[{"arch":"x64","runner":"windows-2022","server":"inbox"}]' ||
           github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
           '[{"arch":"arm64","runner":"windows-11-arm","server":"inbox"}]' ||
@@ -149,8 +156,8 @@ jobs:
     env:
       ORCA_BACKGROUND_LAUNCH: '1'
       ORCA_ISOLATED_SSH_CI: '1'
-      ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && '1' || '0' }}
-      ORCA_G5_SCOPED_BROKER_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && inputs.g5_scoped_broker_probe && '1' || '0' }}
+      ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE: ${{ (github.event_name == 'push' || inputs.g5_linux_docker) && '1' || '0' }}
+      ORCA_G5_SCOPED_BROKER_PROBE: ${{ (github.event_name == 'push' || (inputs.g5_linux_docker && inputs.g5_scoped_broker_probe)) && '1' || '0' }}
       INBOX_PREPARATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.preparation_mode == 'serial' && 'serial' || 'overlap' }}
     steps:
       - uses: actions/checkout@v6
@@ -174,19 +181,19 @@ jobs:
         shell: pwsh
         run: throw 'G5 scoped broker probe requires isolated Linux Docker runner'
       - name: Test G5 Docker runtime isolation rules before preparing the SSH host
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
         shell: pwsh
         run: |
           & powershell.exe -NoProfile -NonInteractive -File config/scripts/test-g5-docker-isolation.ps1
           if($LASTEXITCODE -ne 0){throw 'G5 Docker isolation contract failed'}
       - name: Provision pinned Linux Docker engine on isolated G5 Windows runner
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
         uses: wslkit/setup-skrog@cd2cba80924975b0c77217947c228da8aac17b1f
         with:
           version: '0.11.0'
           wait: 3m
       - name: Verify Linux Docker engine and container on SSH host machine
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -198,7 +205,7 @@ jobs:
           }
           Write-Host 'G5_SSH_WINDOWS_LINUX_DOCKER_HOST_READY'
       - name: Quiesce only the verified Windows inbox sshd on disposable G5 runner
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -325,7 +332,7 @@ jobs:
           }.GetNewClosure()
           & (Join-Path $tools 'preview-ssh/prove-preview-openssh.ps1') -Archive $archive -Arch '${{ matrix.arch }}' -Server '${{ matrix.server }}' -Receipt (Join-Path $receipts 'provider-server.json') -InboxPreparationReceipt $preparation -Accounts $cells.Count -ForwardingAccounts $forwarding -HiddenTools @('npm','npx','node-gyp','gcc','g++','cc','c++','make','cl','clang','clang++','msbuild','cmake') -HostCellProbe $callback 2>&1 | Tee-Object (Join-Path $receipts 'provision.log')
       - name: Restore the original trusted inbox SSH service state on G5 runner
-        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        if: ${{ always() && env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
         shell: pwsh
         run: |
           $r=Join-Path $pwd '.build/ssh-windows-host-receipts/g5-existing-inbox-sshd.json'
