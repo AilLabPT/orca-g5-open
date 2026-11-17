@@ -36,11 +36,15 @@ jobs:
         run: |
           pnpm run build:release
           if($LASTEXITCODE -ne 0){throw 'Release source build failed'}
-      - name: Build G5 Windows runtime and complete deployment template
+      - name: Compile and validate the pinned Windows G5 native prebuilds
+        uses: ./.github/actions/prepare-orcad-prebuilds
+      - name: Compile the Windows CLI launcher
+        uses: ./.github/actions/prepare-windows-cli-launcher
+        with:
+          arches: x64
+      - name: Build complete G5 deployment template
         shell: pwsh
         run: |
-          pnpm run build:orcad-prebuilds --require-slots win32-x64
-          if($LASTEXITCODE -ne 0){throw 'G5 Windows native prebuild failed'}
           node config/scripts/build-orcad-template.mjs --targets win32-x64
           if($LASTEXITCODE -ne 0){throw 'G5 orcad deployment template failed'}
       - name: Package isolated QA installer (never publish)

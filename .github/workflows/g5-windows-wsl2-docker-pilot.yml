@@ -13,7 +13,7 @@ permissions:
 jobs:
   linux-docker-windows:
     if: github.repository == 'AilLabPT/orca-g5-open'
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -55,7 +55,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: g5-windows-wsl2-linux-docker-pilot
+          name: g5-windows-2022-wsl2-linux-docker-pilot
           path: ${{ runner.temp }}/g5-wsl2-pilot/
           if-no-files-found: warn
           retention-days: 7
