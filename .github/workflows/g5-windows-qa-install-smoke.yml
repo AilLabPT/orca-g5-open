@@ -12,7 +12,11 @@ on:
         type: string
         required: true
       expected_sha:
-        description: Authorized exact 40-character source SHA from successful QA packaging
+        description: Authorized exact 40-character checked-out source SHA from successful QA packaging
+        type: string
+        required: true
+      expected_producer_head_sha:
+        description: Exact 40-character workflow commit of the authorized QA packaging run
         type: string
         required: true
 
@@ -32,9 +36,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           QA_RUN_ID: ${{ inputs.qa_run_id }}
           EXPECTED_SHA: ${{ inputs.expected_sha }}
+          EXPECTED_PRODUCER_HEAD: ${{ inputs.expected_producer_head_sha }}
         run: |
           $ErrorActionPreference='Stop'
-          if($env:QA_RUN_ID -notmatch '^[0-9]{8,14}$' -or $env:EXPECTED_SHA -notmatch '^[a-f0-9]{40}$'){
+          if($env:QA_RUN_ID -notmatch '^[0-9]{8,14}$' -or $env:EXPECTED_SHA -notmatch '^[a-f0-9]{40}$' -or
+             $env:EXPECTED_PRODUCER_HEAD -notmatch '^[a-f0-9]{40}$'){
             throw 'Invalid QA provenance identifiers'
           }
           $run=(& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:QA_RUN_ID" |ConvertFrom-Json)
@@ -42,7 +48,7 @@ jobs:
           if($run.status -ne 'completed' -or $run.conclusion -ne 'success' -or
              $run.path -ne '.github/workflows/g5-windows-qa-package.yml' -or
              $run.head_branch -ne 'g5-security-wip-20261116' -or
-             $run.head_sha -ne $env:EXPECTED_SHA -or
+             $run.head_sha -ne $env:EXPECTED_PRODUCER_HEAD -or
              $run.event -notin @('push','workflow_dispatch')){
             throw 'QA installer provenance not authorized: producer workflow, branch, SHA or status mismatch'
           }
