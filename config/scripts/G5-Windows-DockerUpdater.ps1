@@ -279,20 +279,24 @@ if ($Action -eq 'SelfTest') {
     ConvertTo-Json -Compress
   exit 0
 }
+if ($Action -ne 'Status') {
+  Require-MutationAuthority
+  if ($ExpectedContainerId -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'G5 mutation requires a pinned immutable Docker container ID'
+  }
+}
 Initialize-G5Coordination
 try {
 $containerId=Assert-LinuxDockerContainer
 $Script:ContainerIdentity=$containerId
 # Recover must work even when Status deliberately refuses a pending journal.
 if ($Action -eq 'Recover') {
-  Require-MutationAuthority
   Invoke-G5Mutation -Operation 'recover'
   $after=Get-G5State
   [pscustomobject]@{ recovered=$true; active=$after.active;
     restartRequired=$true } | ConvertTo-Json -Compress
   exit 0
 }
-if ($Action -ne 'Status') { Require-MutationAuthority }
 $before = Get-G5State
 switch ($Action) {
   'Status' {
@@ -305,7 +309,6 @@ switch ($Action) {
       restart='no'; windowsNativeUpdaterUnchanged=$true } | ConvertTo-Json -Compress
   }
   'Install' {
-    Require-MutationAuthority
     if ($before.active -eq 'v12') { throw 'V12 is already active' }
     Invoke-G5Mutation -Operation 'install' -Target 'v12'
     $after = Get-G5State
@@ -317,7 +320,6 @@ switch ($Action) {
       restartRequired=$true; windowsNativeUpdaterUnchanged=$true } | ConvertTo-Json -Compress
   }
   'Ensure' {
-    Require-MutationAuthority
     if ($before.active -eq 'v12') {
       $running=Get-G5RunningVersion
       [pscustomobject]@{ changed=$false; active='v12'; runningVersion=$running;
@@ -340,7 +342,6 @@ switch ($Action) {
     }
   }
   'Rollback' {
-    Require-MutationAuthority
     Invoke-G5Mutation -Operation 'rollback'
     $after = Get-G5State
     if ($after.active -ne 'v11') { throw 'G5 V11 rollback did not verify' }
