@@ -298,6 +298,39 @@ describe('Windows host script staging', () => {
   })
 })
 
+describe('G5 owner-checked Windows coordination lock release', () => {
+  it('refuses a superseded owner, without removing successor lock', async () => {
+    const lock = join(dir, '.g5-container-test.lock')
+    mkdirSync(lock)
+    const owner = join(lock, '.orca-fence-owner')
+    writeFileSync(owner, '00000000-0000-0000-0000-000000000001')
+    const stale = await runProcess({
+      program: process.execPath,
+      args: [script, '--fence', lock, '00000000-0000-0000-0000-000000000002',
+        'g5-lock-release', lock, '00000000-0000-0000-0000-000000000002'],
+      timeoutMs: 10_000
+    })
+    expect(stale.code).not.toBe(0)
+    expect(existsSync(lock)).toBe(true)
+    expect(readFileSync(owner, 'utf8')).toBe('00000000-0000-0000-0000-000000000001')
+  })
+
+  it('renames and removes only the lock with the matching owner', async () => {
+    const lock = join(dir, '.g5-container-test.lock')
+    mkdirSync(lock)
+    const token = '00000000-0000-0000-0000-000000000003'
+    writeFileSync(join(lock, '.orca-fence-owner'), token)
+    const result = await runProcess({
+      program: process.execPath,
+      args: [script, '--fence', lock, token, 'g5-lock-release', lock, token],
+      timeoutMs: 10_000
+    })
+    expect(result.code).toBe(0)
+    expect(result.stdout.trim()).toBe('RELEASED')
+    expect(existsSync(lock)).toBe(false)
+  })
+})
+
 describe('Windows slot runtime and file removal', () => {
   const slot = () => join(dir, 'orcad-0.2.0+bb01')
   const sha = 'a'.repeat(64)

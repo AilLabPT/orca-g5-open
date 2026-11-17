@@ -1,0 +1,50 @@
+name: G5 global typecheck - public standard runner
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: g5-global-typecheck-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  typecheck:
+    if: github.repository == 'AilLabPT/orca-g5-open'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        project:
+          - config/tsconfig.node.json
+          - config/tsconfig.tc.web.json
+          - config/tsconfig.tc.cli.json
+          - config/tsconfig.test.pane-launch.json
+          - src/packages/process-host/tsconfig.test.json
+    env:
+      GOMAXPROCS: '2'
+      GOMEMLIMIT: 10GiB
+      CI: 'true'
+    steps:
+      - name: Exact public G5 branch
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install pinned pnpm without cache
+        uses: pnpm/action-setup@v4
+        with:
+          version: 12.14.0
+      - name: Node.js 24 standard toolchain
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install exact lockfile - no actions cache
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Build local workspace packages
+        run: pnpm run build:packages
+      - name: Typecheck exact selected project
+        shell: bash
+        run: |
+          set -euo pipefail
+          node config/scripts/run-typecheck-projects-in-parallel.mjs --compiler=native --checkers=2 --project="${{ matrix.project }}"
+          echo "TYPECHECK_PROJECT_PASS=${{ matrix.project }}"

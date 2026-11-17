@@ -1,7 +1,7 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { WindowsProcessTableTimeoutError } from './windows-process-table-timeout-error'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   __setWindowsProcessTableCimScanForTests,
@@ -834,9 +834,79 @@ describe('resolving the native reader', () => {
     __setWindowsProcessTreeRequireForTests(resolver)
     await expect(readWindowsProcessTableFresh()).resolves.toHaveLength(1)
     expect(request).not.toHaveBeenCalledWith(ADDON_SPECIFIER)
-    expect(request).not.toHaveBeenCalledWith(PACKAGE_SPECIFIER)
+    expect(request).not.toHaveBeenCalled()
     expect(cim).toHaveBeenCalledTimes(1)
     expect(warn.mock.calls[0]?.[0]).toContain('ReadProcessMemory')
+    warn.mockRestore()
+  })
+
+  function withDesktopNpmAddonBinary(
+    bytes: string,
+    module: unknown,
+    preferred = true
+  ): ((specifier: string) => unknown) & { resolve: (specifier: string) => string } {
+    const dir = mkdtempSync(join(tmpdir(), 'orca-desktop-addon-'))
+    const entry = join(dir, 'lib', 'index.js')
+    const addonPath = preferred
+      ? join(dir, 'build', `orca-napi-win32-${process.arch}`, 'windows_process_tree.node')
+      : join(dir, 'build', 'Release', 'windows_process_tree.node')
+    mkdirSync(join(dir, 'lib'), { recursive: true })
+    mkdirSync(dirname(addonPath), { recursive: true })
+    writeFileSync(entry, '// test wrapper')
+    writeFileSync(addonPath, bytes)
+    stagedAddonDirs.push(dir)
+    const request = Object.assign(
+      vi.fn((specifier: string): unknown => {
+        if (specifier === addonPath) return module
+        throw new Error('MODULE_NOT_FOUND')
+      }),
+      { resolve: (specifier: string): string => {
+        if (specifier === PACKAGE_SPECIFIER) return entry
+        throw new Error('MODULE_NOT_FOUND')
+      } }
+    )
+    return request
+  }
+
+  it('refuses the unpatched desktop npm binary before requiring its JS wrapper', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const npmModule = { supportedProcessDataFlags: 7, getAllProcesses: vi.fn() }
+    const request = withDesktopNpmAddonBinary('MZ\0ReadProcessMemory\0', npmModule)
+    const cim = vi.fn().mockResolvedValue([
+      { pid: process.pid, ppid: 0, name: 'node.exe', command: 'node test' }
+    ])
+    __setWindowsProcessTableCimScanForTests(cim)
+    __setWindowsProcessTreeRequireForTests(request)
+    await expect(readWindowsProcessTableFresh()).resolves.toHaveLength(1)
+    expect(request).not.toHaveBeenCalledWith(PACKAGE_SPECIFIER)
+    expect(cim).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls.some(([msg]) => String(msg).includes('desktop npm native addon'))).toBe(true)
+    warn.mockRestore()
+  })
+
+  it('loads exactly the inspected desktop native binary, bypassing the npm wrapper', async () => {
+    const addon = addonReturning(NATIVE)
+    const request = withDesktopNpmAddonBinary('MZ\0NtQueryInformationProcess\0', addon)
+    __setWindowsProcessTreeRequireForTests(request)
+    await expect(readWindowsProcessTableFresh()).resolves.toHaveLength(2)
+    expect(request).toHaveBeenCalledTimes(1)
+    expect(request).toHaveBeenCalledWith(expect.stringMatching(/windows_process_tree\.node$/u))
+    expect(request).not.toHaveBeenCalledWith(PACKAGE_SPECIFIER)
+    expect(addon.getProcessList).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects an unsafe Release fallback before native loading', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const addon = addonReturning(NATIVE)
+    const request = withDesktopNpmAddonBinary('MZ\0ReadProcessMemory\0', addon, false)
+    const cim = vi.fn().mockResolvedValue([
+      { pid: process.pid, ppid: 0, name: 'node.exe', command: 'node test' }
+    ])
+    __setWindowsProcessTableCimScanForTests(cim)
+    __setWindowsProcessTreeRequireForTests(request)
+    await expect(readWindowsProcessTableFresh()).resolves.toHaveLength(1)
+    expect(request).not.toHaveBeenCalled()
+    expect(cim).toHaveBeenCalledTimes(1)
     warn.mockRestore()
   })
 

@@ -103,9 +103,10 @@ export function orcadWindowsHostOpCommand(
   host: RemoteHostPlatform,
   baseDir: string,
   op: OrcadWindowsHostOp,
-  args: readonly string[]
+  args: readonly string[],
+  explicitFence?: { lockDir: string; token: string }
 ): string {
-  const fence = currentOrcadFence()
+  const fence = explicitFence ?? currentOrcadFence()
   return orcadWindowsNodeCommandLine(orcadWindowsPinnedNodePath(host, baseDir), [
     orcadWindowsHostScriptPath(host, baseDir),
     ...(fence ? [ORCAD_WINDOWS_FENCE_ARG, fence.lockDir, fence.token] : []),
@@ -118,9 +119,10 @@ export function orcadWindowsSlotOpCommand(
   host: RemoteHostPlatform,
   slotDir: string,
   op: OrcadWindowsHostOp,
-  args: readonly string[]
+  args: readonly string[],
+  explicitFence?: { lockDir: string; token: string }
 ): string {
-  return orcadWindowsHostOpCommand(host, orcadWindowsBaseDir(host, slotDir), op, args)
+  return orcadWindowsHostOpCommand(host, orcadWindowsBaseDir(host, slotDir), op, args, explicitFence)
 }
 
 export function orcadWindowsHomeOpCommand(

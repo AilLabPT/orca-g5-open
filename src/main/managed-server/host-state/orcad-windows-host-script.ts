@@ -48,6 +48,7 @@ export type OrcadWindowsHostOp =
   | 'build-hash'
   | 'record-read'
   | 'record-publish'
+  | 'g5-lock-release'
   | 'slot-runtime'
   | 'remove-file'
   | 'remove-tree'
@@ -224,6 +225,20 @@ const ops = {
       answer('')
     }
     publish()
+  },
+
+  // Owner-checked G5 container/native lock release. Rename aside before deleting so a
+  // delayed former owner cannot remove a successor's lock.
+  'g5-lock-release'(lockDir, token) {
+    if (fenceOwner(lockDir) !== token) return answer('SUPERSEDED')
+    const aside = lockDir + '.g5-released.' + process.pid + '.' + crypto.randomUUID()
+    fs.renameSync(lockDir, aside)
+    if (fenceOwner(aside) === token) {
+      fs.rmSync(aside, { recursive: true, force: true, maxRetries: 5 })
+      return answer('RELEASED')
+    }
+    if (!fs.existsSync(lockDir)) fs.renameSync(aside, lockDir)
+    answer('SUPERSEDED')
   },
 
   // Loading at all proves this content-addressed file is whole.
