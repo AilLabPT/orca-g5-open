@@ -37,6 +37,7 @@ if(-not $UseFixture){
   $file=Get-Item -LiteralPath $dockerExe -Force
   if(($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'G5_BROKER_DOCKER_REPARSE_FORBIDDEN'}
   # The Skrog context is expected to be local npipe transport, never TCP/SSH.
+  [Console]::WriteLine("G5_BROKER_CONTEXT_START {0:o}", [DateTime]::UtcNow)
   $beforePreference=$ErrorActionPreference
   try{
     $ErrorActionPreference='Continue'
@@ -49,14 +50,17 @@ if(-not $UseFixture){
     throw 'G5_BROKER_UNTRUSTED_DOCKER_CONTEXT_ENDPOINT'
   }
 }
+[Console]::WriteLine("G5_BROKER_CONTEXT_READY {0:o}", [DateTime]::UtcNow)
 for($n=0;$n -lt $MaxRequests;$n++){
   $pipe=New-Object IO.Pipes.NamedPipeServerStream -ArgumentList @(
     $PipeName,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,
     [IO.Pipes.PipeOptions]::Asynchronous,4096,4096,$pipeSecurity
   )
   try{
+    [Console]::WriteLine("G5_BROKER_PIPE_READY {0:o}", [DateTime]::UtcNow)
     $acceptTask=$pipe.WaitForConnectionAsync()
     if(-not $acceptTask.Wait(12000)){throw 'G5_BROKER_ACCEPT_TIMEOUT'}
+    [Console]::WriteLine("G5_BROKER_CONNECTED {0:o}", [DateTime]::UtcNow)
     $reader=[IO.StreamReader]::new($pipe,[Text.Encoding]::UTF8,$false,1024,$true)
     $writer=[IO.StreamWriter]::new($pipe,[Text.UTF8Encoding]::new($false),1024,$true)
     $writer.AutoFlush=$true
@@ -76,11 +80,13 @@ for($n=0;$n -lt $MaxRequests;$n++){
         if($buffer[0] -ne [char]13){$null=$chars.Append($buffer[0])}
       }
       if($chars.Length -gt 256){throw 'G5_BROKER_REQUEST_TOO_LONG'}
+      [Console]::WriteLine("G5_BROKER_REQUEST_READ {0:o}", [DateTime]::UtcNow)
       $request=$chars.ToString()
       $script:principalSid=$null
       $pipe.RunAsClient([IO.Pipes.PipeStreamImpersonationWorker]{
         $script:principalSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
       })
+      [Console]::WriteLine("G5_BROKER_IDENTITY_READ {0:o}", [DateTime]::UtcNow)
       $body=$null
       if($request){try{$body=$request|ConvertFrom-Json}catch{}}
       if($principalSid -cne $AuthorizedSid -or !$body -or
@@ -93,19 +99,24 @@ for($n=0;$n -lt $MaxRequests;$n++){
       if($UseFixture){
         $reply='linux'
       }else{
+        [Console]::WriteLine("G5_BROKER_DOCKER_START {0:o}", [DateTime]::UtcNow)
         $p=$ErrorActionPreference
         try{
           $ErrorActionPreference='Continue'
           $output=& $dockerExe -H $contextEndpoint info --format '{{.OSType}}' 2>&1
           $status=$LASTEXITCODE
         }finally{$ErrorActionPreference=$p}
+        [Console]::WriteLine("G5_BROKER_DOCKER_END {0:o}", [DateTime]::UtcNow)
         if($status -ne 0){throw 'DOCKER_ENGINE_UNAVAILABLE'}
         $reply=($output|Out-String).Trim()
       }
       if($reply -cne 'linux'){throw 'G5_DOCKER_NOT_LINUX'}
+      [Console]::WriteLine("G5_BROKER_REPLY_START {0:o}", [DateTime]::UtcNow)
       $writer.WriteLine('{"ok":true,"dockerOS":"linux","authorization":"read-only-scoped-broker"}')
+      [Console]::WriteLine("G5_BROKER_REPLY_FLUSHED {0:o}", [DateTime]::UtcNow)
     }finally{$writer.Dispose();$reader.Dispose()}
   }catch{
+    [Console]::Error.WriteLine("G5_BROKER_REQUEST_FAILED {0:o} {1}", [DateTime]::UtcNow, $_.Exception.GetType().Name)
     try{
       if($pipe.IsConnected){
         $writer2=[IO.StreamWriter]::new($pipe)
