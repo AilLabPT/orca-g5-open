@@ -68,6 +68,11 @@ on:
       - 'config/scripts/orcad-windows-prebuild-cache.mjs'
   workflow_dispatch:
     inputs:
+      g5_x64_only:
+        description: Restrict G5 qualification to the standard Windows x64 inbox SSH runner.
+        type: boolean
+        required: false
+        default: false
       cells:
         description: Comma-separated cell ids from src/main/ssh/ssh-windows-host-cells.ts; empty runs the default set (orcad-cli-* cells run only when named).
         required: false
@@ -119,7 +124,7 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(github.event_name == 'push' &&
+          ${{ fromJSON((github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.g5_x64_only)) &&
           '[{"arch":"x64","runner":"windows-2022","server":"inbox"}]' ||
           github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
           '[{"arch":"arm64","runner":"windows-11-arm","server":"inbox"}]' ||
