@@ -1,0 +1,66 @@
+name: G5 Windows QA installer smoke - disposable VM
+
+on:
+  workflow_dispatch:
+    inputs:
+      qa_run_id:
+        description: Successful G5 QA packaging workflow run id
+        type: string
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  qa-installer-smoke:
+    if: github.repository == 'AilLabPT/orca-g5-open'
+    runs-on: windows-2022
+    timeout-minutes: 25
+    steps:
+      - name: Fetch exact QA installer artifact
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ inputs.qa_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          name: g5-windows-qa-installer-test-signed
+          path: qa-installer
+      - name: Check hash, QA-only signature and perform disposable installation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $files=@(Get-ChildItem qa-installer -File -Filter '*TEST-SIGNED.exe')
+          if($files.Count -ne 1){throw 'QA installer absent or ambiguous'}
+          $exe=$files[0].FullName
+          $receipt=Get-Content 'qa-installer/qa-receipt.json' -Raw |ConvertFrom-Json
+          if($receipt.testSignatureOnly -ne $true -or $receipt.publicCodeSigningTrustVerified -ne $false){throw 'Incorrect QA signing classification'}
+          $hash=(Get-FileHash -Algorithm SHA256 $exe).Hash
+          if($hash -ne $receipt.testSignedSha256){throw 'QA installer SHA256 mismatch'}
+          $sig=Get-AuthenticodeSignature -FilePath $exe
+          if(-not $sig.SignerCertificate -or $sig.SignerCertificate.Thumbprint -ne $receipt.signatureThumbprint){throw 'QA signature identity mismatch'}
+          Write-Host 'G5_QA_SHA256_AND_EPHEMERAL_SIGNER_VERIFIED'
+          $p=Start-Process -FilePath $exe -ArgumentList '/S' -PassThru -Wait
+          if($p.ExitCode -ne 0){throw "QA installer failed with exit code $($p.ExitCode)"}
+          $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
+          if(-not(Test-Path $installed)){throw 'QA Orca executable absent after installation'}
+          $proof=[ordered]@{
+            sourceCommit=$receipt.sourceCommit
+            setupSha256=$hash
+            testSignatureOnly=$true
+            publicTrustVerified=$false
+            installerExitCode=$p.ExitCode
+            applicationInstalled=$true
+            signingReviewerGO=$false
+            productionAuthorized=$false
+          }
+          $proof|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $env:RUNNER_TEMP 'g5-qa-install-proof.json')
+          Write-Host 'G5_QA_INSTALL_SMOKE_PASS'
+      - name: Upload installer smoke receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: g5-windows-qa-install-receipt
+          path: ${{ runner.temp }}/g5-qa-install-proof.json
+          if-no-files-found: warn
+          retention-days: 2
