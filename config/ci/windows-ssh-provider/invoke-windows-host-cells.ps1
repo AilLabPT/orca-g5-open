@@ -186,7 +186,7 @@ try {
         $logBase=Join-Path $ReceiptRoot ($cell+'.broker')
         $serverProcess=Start-Process powershell.exe -ArgumentList @(
           '-NoProfile','-NonInteractive','-File',('"' + $serverScript + '"'),
-          '-AuthorizedSid',$account.sid,'-PipeName',$pipeName
+          '-AuthorizedSid',$account.sid,'-PipeName',$pipeName,'-MaxRequests','2'
         ) -PassThru -WindowStyle Hidden -RedirectStandardOutput ($logBase+'.out.log') -RedirectStandardError ($logBase+'.err.log')
         try{
           Start-Sleep -Milliseconds 900
@@ -209,11 +209,22 @@ try {
           if($reply -cne 'G5_SCOPED_BROKER_ENGINE_LINUX_OK'){
             throw 'G5 scoped SSH identity broker did not prove Linux Docker'
           }
+          $denied=Invoke-PrivateSsh $account.name ($clientCommand+' -Operation docker-run') -ReturnDetails
+          if($denied.exitCode -eq 0 -or
+             $denied.stderr -notmatch '(?m)^G5_BROKER_OPERATION_REJECTED\s*$'){
+            throw 'G5 scoped broker did not explicitly reject the forbidden operation'
+          }
           if(-not $serverProcess.WaitForExit(10000) -or $serverProcess.ExitCode -ne 0){
             throw 'G5 scoped broker did not terminate cleanly'
           }
+          $brokerLog=Get-Content -LiteralPath ($logBase+'.out.log')
+          if(@($brokerLog -match '^G5_BROKER_NOT_AUTHORIZED ').Count -ne 1 -or
+             @($brokerLog -match '^G5_BROKER_DOCKER_START ').Count -ne 1){
+            throw 'G5 forbidden operation denial did not match the broker audit'
+          }
           $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshPrincipalSid=$account.sid;
             directSkrogPipeAclDenialVerified=$directAclDenied;scopedBrokerReadOnlyLinux=$true;
+            scopedBrokerForbiddenOperationRejected=$true;
             fullG5RemoteInstallerQualified=$false})
           Write-Host ('G5_SSH_SCOPED_READ_ONLY_BROKER_PASS cell='+$cell)
         }finally{
