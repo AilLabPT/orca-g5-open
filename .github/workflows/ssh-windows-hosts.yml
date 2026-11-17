@@ -73,6 +73,11 @@ on:
         type: boolean
         required: false
         default: false
+      g5_linux_docker:
+        description: Provision pinned WSL2 Linux Docker on same disposable Windows x64 SSH runner.
+        type: boolean
+        required: false
+        default: false
       cells:
         description: Comma-separated cell ids from src/main/ssh/ssh-windows-host-cells.ts; empty runs the default set (orcad-cli-* cells run only when named).
         required: false
@@ -124,7 +129,9 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON((github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.g5_x64_only)) &&
+          ${{ fromJSON((github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker) &&
+          '[{"arch":"x64","runner":"windows-latest","server":"inbox"}]' ||
+          (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.g5_x64_only)) &&
           '[{"arch":"x64","runner":"windows-2022","server":"inbox"}]' ||
           github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
           '[{"arch":"arm64","runner":"windows-11-arm","server":"inbox"}]' ||
@@ -154,6 +161,24 @@ jobs:
             resources
             tests
             src
+      - name: Provision pinned Linux Docker engine on isolated G5 Windows runner
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        uses: wslkit/setup-skrog@cd2cba80924975b0c77217947c228da8aac17b1f
+        with:
+          version: '0.11.0'
+          wait: 3m
+      - name: Verify Linux Docker engine and container on SSH host machine
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $os=(& docker info --format '{{.OSType}}').Trim()
+          if($LASTEXITCODE -ne 0 -or $os -ne 'linux'){throw 'G5_WSL2_DOCKER_UNAVAILABLE'}
+          $out=& docker run --rm --network none alpine:3.20 sh -c 'echo G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'
+          if($LASTEXITCODE -ne 0 -or (($out|Out-String).Trim()) -ne 'G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'){
+            throw 'G5 Docker execution on SSH host failed'
+          }
+          Write-Host 'G5_SSH_WINDOWS_LINUX_DOCKER_HOST_READY'
       - name: Self-test the provisioning scripts before touching the machine
         shell: pwsh
         run: |
