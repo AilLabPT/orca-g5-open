@@ -1,0 +1,74 @@
+name: G5 Windows Docker capability - isolated public runner
+
+on:
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/g5-windows-docker-capability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify-windows-docker-host:
+    if: github.repository == 'AilLabPT/orca-g5-open'
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Record pinned source and Windows capability
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root=Join-Path $env:RUNNER_TEMP 'g5-qualification'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $sha=(git rev-parse HEAD).Trim()
+          if($sha -notmatch '^[a-f0-9]{40}$'){throw 'Missing full source commit'}
+          $data=[ordered]@{
+            sourceCommit=$sha
+            runnerOS=$env:RUNNER_OS
+            runnerArch=$env:RUNNER_ARCH
+            windowsVersion=[Environment]::OSVersion.Version.ToString()
+            dockerCli=(Get-Command docker -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue)
+            dockerServerOS=$null
+            dockerServerReachable=$false
+            linuxDockerAvailable=$false
+            windowsSshClient=[bool](Get-Command ssh.exe -ErrorAction SilentlyContinue)
+          }
+          if($data.dockerCli){
+            $previous=$ErrorActionPreference
+            try{
+              $ErrorActionPreference='Continue'
+              $out=& docker info --format '{{.OSType}}' 2>&1
+              $exit=$LASTEXITCODE
+            }finally{$ErrorActionPreference=$previous}
+            if($exit -eq 0){
+              $data.dockerServerReachable=$true
+              $data.dockerServerOS=([string]($out | Select-Object -Last 1)).Trim()
+              $data.linuxDockerAvailable=($data.dockerServerOS -eq 'linux')
+            }
+          }
+          $data|ConvertTo-Json -Depth 6|Set-Content -Encoding UTF8 (Join-Path $root 'capability.json')
+          Write-Host ('G5_LINUX_DOCKER_AVAILABLE='+$data.linuxDockerAvailable)
+          if(-not $data.linuxDockerAvailable){
+            Write-Warning 'HOLD: standard Windows runner lacks a reachable Linux Docker daemon. Full SSH+Docker G5 installer cannot be certified on this runner.'
+          }
+      - name: Upload exact capability receipt
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: g5-windows-docker-capability
+          path: ${{ runner.temp }}/g5-qualification/capability.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce G5 Linux Docker prerequisite
+        shell: pwsh
+        run: |
+          $receipt=Get-Content (Join-Path $env:RUNNER_TEMP 'g5-qualification/capability.json') -Raw | ConvertFrom-Json
+          if(-not $receipt.linuxDockerAvailable){
+            throw 'G5_FULL_SSH_DOCKER_BLOCKED: Linux Docker not available on Windows hosted runner'
+          }
+          Write-Host 'G5_DOCKER_PREREQUISITE_PASS'
