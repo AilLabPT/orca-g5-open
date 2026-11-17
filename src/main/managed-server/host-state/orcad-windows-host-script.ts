@@ -209,12 +209,20 @@ const ops = {
   },
 
   // Antivirus holding the record open shows up as EPERM/EACCES/EBUSY; retry briefly.
-  'record-publish'(staged, file) {
+  'record-publish'(staged, file, lockDir, ownerToken) {
+    const checkG5Owner = () => {
+      if (Boolean(lockDir) !== Boolean(ownerToken)) throw Error('incomplete G5 publish fence')
+      if (lockDir && fenceOwner(lockDir) !== ownerToken) {
+        throw Error('G5 journal publication owner superseded')
+      }
+    }
+    checkG5Owner()
     const fd = fs.openSync(staged, 'r+')
     try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
     const delays = [50, 100, 150, 200, 250]
     let attempt = 0
     const publish = () => {
+      checkG5Owner() // Retry timers may outlive the initial fence decision.
       try { fs.renameSync(staged, file) } catch (error) {
         if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code) && attempt < delays.length) {
           setTimeout(publish, delays[attempt++])

@@ -5,9 +5,9 @@ param(
   [Parameter(Mandatory)][ValidateSet('Status','Install','Ensure','Rollback','Recover','SelfTest')][string]$Action,
   [ValidatePattern('^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$')][string]$Container = 'maestro-g5-managed-validation',
   [string]$ExpectedImageId = '',
+  [string]$ExpectedContainerId = '',
   [string]$CoordinationLock = '',
   [string]$OwnerToken = '',
-  [string]$CoordinationRoot = '',
   [switch]$Apply
 )
 Set-StrictMode -Version Latest
@@ -16,7 +16,7 @@ $Script:OrcaEntry = '/opt/g5-tools/g5-managed-orca-entry.py'
 $Script:OrcaRoot = '/home/node/g5-managed'
 $Script:OwnerLock = ''
 $Script:HeldToken = ''
-$Script:OwnsCoordinationLock = $false
+$Script:ContainerIdentity = ''
 
 function Test-SafeWindowsPath([string]$PathValue) {
   if ($PathValue -notmatch '^[A-Za-z]:\\' -or
@@ -42,55 +42,45 @@ function Initialize-G5Coordination {
   if (($CoordinationLock -eq '') -ne ($OwnerToken -eq '')) {
     throw 'G5 coordination lock and token must be supplied together'
   }
-  if ($CoordinationLock) {
-    Test-SafeWindowsPath $CoordinationLock
-    if ((Split-Path -Leaf $CoordinationLock) -cne (Get-G5ContainerLockName)) {
-      throw 'G5 coordination lock does not match pinned container'
-    }
-    if ($OwnerToken -notmatch '^[a-f0-9-]{36}$') { throw 'Invalid G5 owner token' }
-    $Script:OwnerLock = $CoordinationLock
-    $Script:HeldToken = $OwnerToken
-    Assert-G5CoordinationOwner
-    return
+  if (-not $CoordinationLock) {
+    if ($Action -eq 'Status' -or $Action -eq 'SelfTest') { return }
+    throw 'G5 mutation requires a native-authorized coordination lock and owner token'
   }
-  if ($Action -eq 'Status' -or $Action -eq 'SelfTest') { return }
-  $root = if ($CoordinationRoot) { $CoordinationRoot } else {
-    Join-Path $env:USERPROFILE '.orca-remote'
+  Test-SafeWindowsPath $CoordinationLock
+  # The lock namespace is fixed by the native product, not by a caller-supplied
+  # directory. Alternate roots would let two writers mutate the same container.
+  $canonicalRoot = Join-Path $env:USERPROFILE '.orca-remote'
+  $expectedPath = Join-Path $canonicalRoot (Get-G5ContainerLockName)
+  $realPath = [IO.Path]::GetFullPath($CoordinationLock)
+  $canonicalPath = [IO.Path]::GetFullPath($expectedPath)
+  if (-not [String]::Equals($realPath, $canonicalPath,
+                            [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'G5 coordination lock must use the canonical native host namespace'
   }
-  Test-SafeWindowsPath $root
-  $null = New-Item -ItemType Directory -Force -Path $root
-  $lockPath = Join-Path $root (Get-G5ContainerLockName)
-  try {
-    $null = New-Item -ItemType Directory -Path $lockPath -ErrorAction Stop
-  } catch {
-    throw 'G5 coordination lock is occupied; no unowned mutation permitted'
-  }
-  $Script:OwnerLock = $lockPath
-  $Script:HeldToken = [guid]::NewGuid().ToString('D')
-  $Script:OwnsCoordinationLock = $true
-  [IO.File]::WriteAllText((Join-Path $lockPath '.orca-fence-owner'),$Script:HeldToken,
-                          [Text.Encoding]::ASCII)
+  if ($OwnerToken -notmatch '^[a-f0-9-]{36}$') { throw 'Invalid G5 owner token' }
+  $Script:OwnerLock = $CoordinationLock
+  $Script:HeldToken = $OwnerToken
   Assert-G5CoordinationOwner
 }
 function Release-G5Coordination {
-  if (-not $Script:OwnsCoordinationLock) { return }
+  # The native owner holds this lock across Ensure, Status and finalization.
+  # Only the owner-checked host operation may release it. Never release here.
   Assert-G5CoordinationOwner
-  $aside = $Script:OwnerLock + '.released.' + $PID + '.' + [guid]::NewGuid().ToString('N')
-  [IO.Directory]::Move($Script:OwnerLock,$aside)
-  $ownerPath = Join-Path $aside '.orca-fence-owner'
-  if ([IO.File]::ReadAllText($ownerPath).Trim() -cne $Script:HeldToken) {
-    if (-not [IO.Directory]::Exists($Script:OwnerLock)) {
-      [IO.Directory]::Move($aside,$Script:OwnerLock)
-    }
-    throw 'G5 coordination ownership changed during release'
-  }
-  [IO.Directory]::Delete($aside,$true)
 }
 function Invoke-Docker {
   param([string[]]$Arguments)
   Assert-G5CoordinationOwner
-  $output = & docker @Arguments 2>&1
-  $exitCode = $LASTEXITCODE
+  # Docker logs emits valid diagnostic lines on stderr even on exit 0.
+  # Windows PowerShell 5.1 turns redirected native stderr into ErrorRecord;
+  # capture it without promoting it into a terminating PowerShell exception.
+  $previousPreference = $ErrorActionPreference
+  try {
+    $ErrorActionPreference = 'Continue'
+    $output = & docker @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousPreference
+  }
   Assert-G5CoordinationOwner
   if ($exitCode -ne 0) {
     throw "Docker operation failed (exit $exitCode): $($Arguments[0])"
@@ -109,13 +99,16 @@ function Assert-LinuxDockerContainer {
   }
   if ($info[3] -ne $ExpectedImageId) { throw 'Unexpected container image identity' }
   if ($info[4] -notmatch '^[a-f0-9]{64}$') { throw 'Invalid immutable Docker container identity' }
+  if ($ExpectedContainerId -and $info[4] -cne $ExpectedContainerId) {
+    throw 'G5 container was replaced before mutation: immutable ID does not match'
+  }
   return $info[4]
 }
 function Get-G5ContainerId {
   return @(Invoke-Docker @('inspect',$Container,'--format','{{.Id}}'))[-1].Trim()
 }
 function Get-G5State {
-  $lines = @(Invoke-Docker @('exec',$Container,'python3',$Script:OrcaEntry,
+  $lines = @(Invoke-Docker @('exec',$Script:ContainerIdentity,'python3',$Script:OrcaEntry,
                                'inspect','--root',$Script:OrcaRoot))
   $candidate = @($lines | Where-Object { $_.StartsWith('{') })
   if ($candidate.Count -ne 1) { throw 'G5 inspect returned no unique JSON state' }
@@ -127,7 +120,7 @@ function Get-G5State {
 }
 function Get-G5RunningVersion {
   # Check the actual process, not only the active version symlink.
-  $lines = @(Invoke-Docker @('exec',$Container,'sh','-c','ps -o args= -p 1'))
+  $lines = @(Invoke-Docker @('exec',$Script:ContainerIdentity,'sh','-c','ps -o args= -p 1'))
   $command = $lines -join ' '
   if ($command.Contains('/opt/g5-sources/v12/g5-bun54-slot/orcad.js')) { return 'v12' }
   if ($command.Contains('/opt/g5-sources/v11/g5-bun54-slot/orcad.js')) { return 'v11' }
@@ -138,27 +131,39 @@ function Get-G5Readiness {
   if ($RunningVersion -notin @('v11', 'v12')) {
     return [pscustomobject]@{ healthy=$false; protocolVersion=0 }
   }
-  $started=@(Invoke-Docker @('inspect',$Container,'--format','{{.State.StartedAt}}'))[-1].Trim()
-  $lines=@(Invoke-Docker @('logs','--since',$started,$Container))
-  $valid=@()
+  $started=@(Invoke-Docker @('inspect',$Script:ContainerIdentity,'--format','{{.State.StartedAt}}'))[-1].Trim()
+  $lines=@(Invoke-Docker @('logs','--since',$started,$Script:ContainerIdentity))
+  $lastReady=$null
   foreach ($line in $lines) {
     if (-not ([string]$line).Trim().StartsWith('{')) { continue }
     try {
       $entry=$line | ConvertFrom-Json
-      if ($entry.type -ne 'orca_server_ready') { continue }
-      $health=$entry.health
-      $terminal=$health.terminalDaemon
-      $match=([string]$terminal.entryPath).Contains('/opt/g5-sources/'+$RunningVersion+'/')
-      if ($terminal.state -eq 'live' -and
-          $terminal.selfTest.ok -eq $true -and
-          $terminal.protocolVersion -eq 54 -and $match) {
-        $valid+=,$entry
-      }
+      if ($entry.type -eq 'orca_server_ready') { $lastReady=$entry }
     } catch {}
   }
+  $healthy=$false
+  if ($null -ne $lastReady) {
+    $terminal=$lastReady.health.terminalDaemon
+    $path=[string]$terminal.entryPath
+    $pidValue=0
+    $hasPid=[int]::TryParse([string]$terminal.pid,[ref]$pidValue)
+    if ($terminal.state -eq 'live' -and
+        $terminal.selfTest.ok -eq $true -and
+        $terminal.protocolVersion -eq 54 -and
+        $path.Contains('/opt/g5-sources/'+$RunningVersion+'/') -and
+        $hasPid -and $pidValue -gt 1) {
+      # Startup self-test is not current health. Verify the same daemon PID
+      # still exists and executes that exact versioned entry before accepting.
+      try {
+        $actual=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'sh','-c',
+          ('ps -o args= -p '+$pidValue))) -join ' '
+        $healthy=$actual.Contains($path)
+      } catch { $healthy=$false }
+    }
+  }
   return [pscustomobject]@{
-    healthy=($valid.Count -gt 0)
-    protocolVersion=if($valid.Count -gt 0){54}else{0}
+    healthy=$healthy
+    protocolVersion=if($healthy){54}else{0}
   }
 }
 function Require-MutationAuthority {
@@ -166,7 +171,10 @@ function Require-MutationAuthority {
 }
 function Invoke-G5Mutation {
   param([string]$Operation,[string]$Target='')
-  $args = @('exec',$Container,'python3',$Script:OrcaEntry,
+  if (-not $Script:ContainerIdentity -or $Script:ContainerIdentity -notmatch '^[a-f0-9]{64}$') {
+    throw 'G5 immutable container ID is not pinned'
+  }
+  $args = @('exec',$Script:ContainerIdentity,'python3',$Script:OrcaEntry,
              $Operation,'--root',$Script:OrcaRoot)
   if ($Target) { $args += @('--new',$Target) }
   $null = Invoke-Docker $args
@@ -181,6 +189,7 @@ if ($Action -eq 'SelfTest') {
 Initialize-G5Coordination
 try {
 $containerId=Assert-LinuxDockerContainer
+$Script:ContainerIdentity=$containerId
 # Recover must work even when Status deliberately refuses a pending journal.
 if ($Action -eq 'Recover') {
   Require-MutationAuthority
@@ -224,6 +233,9 @@ switch ($Action) {
     } else {
       Invoke-G5Mutation -Operation 'install' -Target 'v12'
       $after=Get-G5State
+    if ((Get-G5ContainerId) -ne $containerId) {
+      throw 'G5 container name replaced during pinned mutation'
+    }
       if ($after.active -ne 'v12') {
         try { Invoke-G5Mutation -Operation 'rollback' } catch {}
         throw 'G5 ensure failed'

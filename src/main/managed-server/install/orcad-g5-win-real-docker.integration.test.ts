@@ -40,7 +40,6 @@ import { cachedOrcadSlotInstalled } from './orcad-remote-install-cached-probe'
 import { isRemoteInstallComplete, finalizeInstall } from './remote-versioned-install'
 import { uploadRemoteInstallDirectory } from './remote-install-transfers'
 import {
-  assertCompatibleG5ReconciliationRecord,
   readG5ReconciliationRecord,
   publishG5ReconciliationRecord,
   releaseOwnedG5Lock

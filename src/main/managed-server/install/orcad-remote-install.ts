@@ -40,10 +40,11 @@ type G5Coordination = { lockDir: string; ownerToken: string }
 
 async function ensureOptionalG5Docker(
   options: Parameters<typeof installOrcadBundle>[0],
-  coordination: G5Coordination
-): Promise<void> {
+  coordination: G5Coordination,
+  expectedContainerId?: string
+): Promise<string | undefined> {
   const config = options.g5Docker
-  if (!config) return
+  if (!config) return undefined
   if (options.host.os !== 'win32') {
     throw new Error('G5 Docker bridge requires Windows native updater host')
   }
@@ -65,7 +66,8 @@ async function ensureOptionalG5Docker(
     '-Action', 'Ensure', '-Container', config.container,
     '-ExpectedImageId', config.expectedImageId, '-Apply',
     '-CoordinationLock', coordination.lockDir,
-    '-OwnerToken', coordination.ownerToken
+    '-OwnerToken', coordination.ownerToken,
+    ...(expectedContainerId ? ['-ExpectedContainerId', expectedContainerId] : [])
   ])
   const result = await execCommand(options.conn, command, {
     wrapCommand: false,
@@ -82,6 +84,7 @@ async function ensureOptionalG5Docker(
     throw new Error('G5 selected but V12 not running: controlled restart and health qualification required')
   }
   await verifyOptionalG5DockerStatus(options, coordination, parsed.containerId)
+  return parsed.containerId
 }
 
 /** A fresh read-only observation used also after an uncertain native finalization. */
@@ -101,7 +104,8 @@ async function verifyOptionalG5DockerStatus(
     '-Action', 'Status', '-Container', config.container,
     '-ExpectedImageId', config.expectedImageId,
     '-CoordinationLock', coordination.lockDir,
-    '-OwnerToken', coordination.ownerToken
+    '-OwnerToken', coordination.ownerToken,
+    ...(expectedContainerId ? ['-ExpectedContainerId', expectedContainerId] : [])
   ])
   const statusOutput = await execCommand(options.conn, statusCommand, {
     wrapCommand: false,
@@ -180,10 +184,16 @@ async function prepareG5Reconciliation(
   if (!config) return null
   const current = await readG5ReconciliationRecord(options, remoteDir, token)
   assertCompatibleG5ReconciliationRecord(current, config, nativeVersion)
+  // An earlier mutation with no durable immutable identity cannot be retried
+  // safely by name. Require manual reconciliation instead of guessing ownership.
+  if (current?.phase === 'pending' && !current.containerId) {
+    throw new Error('G5 pending mutation has unknown immutable container identity; manual reconciliation required')
+  }
   const record: G5ReconciliationRecord = {
     schema: 1,
     container: config.container,
     imageId: config.expectedImageId,
+    ...(current?.containerId ? { containerId: current.containerId } : {}),
     nativeVersion,
     ownerToken: token,
     phase: 'pending'
@@ -204,11 +214,14 @@ async function reconcileG5OnSlot(
     ownerToken: token
   }
   await publishG5ReconciliationRecord(options, remoteDir, record)
-  await ensureOptionalG5Docker(options, coordination)
+  const immutableId = await ensureOptionalG5Docker(options, coordination, record.containerId)
+  if (!immutableId) throw new Error('G5 qualified Docker identity missing')
   await publishG5ReconciliationRecord(options, remoteDir, {
     ...record,
+    containerId: immutableId,
     phase: 'qualified'
   })
+  return immutableId
 }
 
 /** Existing complete slots must use the same per-slot lock as initial installs.
@@ -380,9 +393,9 @@ export async function installOrcadBundle(
     // Publish durable intent, then independently qualify Docker before marking native complete.
     // The next attempt can resume a pending/qualified record with the same immutable pins.
     const finalizeAndReconcile = async (coordination: G5Coordination): Promise<void> => {
-      if (options.g5Docker) {
-        await reconcileG5OnSlot(options, remoteDir, fullVersion, token)
-      }
+      const pinnedContainerId = options.g5Docker
+        ? await reconcileG5OnSlot(options, remoteDir, fullVersion, token)
+        : undefined
       try {
         await finalizeInstall(options.conn, remoteDir, options.host, {
           signal: options.signal,
@@ -399,12 +412,12 @@ export async function installOrcadBundle(
           }
         )
         if (!committed) throw error
-        await verifyOptionalG5DockerStatus(options, coordination)
+        await verifyOptionalG5DockerStatus(options, coordination, pinnedContainerId)
       }
       // The final native slot completion can be followed by a concurrent
       // external Docker replacement. Observe once more under the coordination lock.
       if (options.g5Docker) {
-        await verifyOptionalG5DockerStatus(options, coordination)
+        await verifyOptionalG5DockerStatus(options, coordination, pinnedContainerId)
       }
     }
     if (options.g5Docker) {

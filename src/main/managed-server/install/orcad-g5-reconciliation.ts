@@ -28,6 +28,8 @@ export type G5ReconciliationRecord = {
   schema: 1
   container: string
   imageId: string
+  /** Immutable Docker container ID retained across interrupted native commit. */
+  containerId?: string
   nativeVersion: string
   ownerToken: string
   phase: 'pending' | 'qualified'
@@ -105,6 +107,10 @@ function verifiedRecord(value: unknown): G5ReconciliationRecord {
       !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/u.test(value.container) ||
       !('imageId' in value) || typeof value.imageId !== 'string' ||
       !/^sha256:[a-f0-9]{64}$/u.test(value.imageId) ||
+      ('containerId' in value &&
+        (typeof value.containerId !== 'string' ||
+         !/^[a-f0-9]{64}$/u.test(value.containerId))) ||
+      (!('containerId' in value) && value.phase === 'qualified') ||
       !('nativeVersion' in value) || typeof value.nativeVersion !== 'string' ||
       value.nativeVersion.length < 1 || value.nativeVersion.length > 200 ||
       !('ownerToken' in value) || typeof value.ownerToken !== 'string' ||
@@ -116,6 +122,8 @@ function verifiedRecord(value: unknown): G5ReconciliationRecord {
     schema: 1,
     container: value.container,
     imageId: value.imageId,
+    ...('containerId' in value && typeof value.containerId === 'string'
+      ? { containerId: value.containerId } : {}),
     nativeVersion: value.nativeVersion,
     ownerToken: value.ownerToken,
     phase: value.phase
@@ -172,7 +180,7 @@ export async function publishG5ReconciliationRecord(
     await execCommand(
       target.conn,
       orcadWindowsSlotOpCommand(target.host, slotDir, 'record-publish', [
-        stagedPath, path
+        stagedPath, path, g5NativeLockDir(target, slotDir), record.ownerToken
       ], { lockDir: g5NativeLockDir(target, slotDir), token: record.ownerToken }),
       { wrapCommand: false, signal: target.signal }
     )
