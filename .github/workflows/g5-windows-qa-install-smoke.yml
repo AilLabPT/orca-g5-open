@@ -7,6 +7,10 @@ on:
         description: Successful G5 QA packaging workflow run id
         type: string
         required: true
+      expected_sha:
+        description: Authorized exact 40-character source SHA from successful QA packaging
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -18,6 +22,27 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 25
     steps:
+      - name: Verify authorized producing workflow before artifact download
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QA_RUN_ID: ${{ inputs.qa_run_id }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:QA_RUN_ID -notmatch '^[0-9]{8,14}$' -or $env:EXPECTED_SHA -notmatch '^[a-f0-9]{40}$'){
+            throw 'Invalid QA provenance identifiers'
+          }
+          $run=(& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:QA_RUN_ID" |ConvertFrom-Json)
+          if($LASTEXITCODE -ne 0 -or -not $run){throw 'Could not read QA producing run'}
+          if($run.status -ne 'completed' -or $run.conclusion -ne 'success' -or
+             $run.path -ne '.github/workflows/g5-windows-qa-package.yml' -or
+             $run.head_branch -ne 'g5-security-wip-20261116' -or
+             $run.head_sha -ne $env:EXPECTED_SHA -or
+             $run.event -notin @('push','workflow_dispatch')){
+            throw 'QA installer provenance not authorized: producer workflow, branch, SHA or status mismatch'
+          }
+          Write-Host ('G5_AUTHORIZED_QA_PRODUCER='+$env:QA_RUN_ID+' SHA='+$env:EXPECTED_SHA)
       - name: Fetch exact QA installer artifact
         uses: actions/download-artifact@v8
         with:
@@ -27,6 +52,8 @@ jobs:
           name: g5-windows-qa-installer-test-signed
           path: qa-installer
       - name: Check hash, QA-only signature and perform disposable installation
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -34,12 +61,28 @@ jobs:
           if($files.Count -ne 1){throw 'QA installer absent or ambiguous'}
           $exe=$files[0].FullName
           $receipt=Get-Content 'qa-installer/qa-receipt.json' -Raw |ConvertFrom-Json
+          if($receipt.sourceCommit -ne $env:EXPECTED_SHA){throw 'Source commit mismatch in QA artifact'}
           if($receipt.testSignatureOnly -ne $true -or $receipt.publicCodeSigningTrustVerified -ne $false){throw 'Incorrect QA signing classification'}
           $hash=(Get-FileHash -Algorithm SHA256 $exe).Hash
           if($hash -ne $receipt.testSignedSha256){throw 'QA installer SHA256 mismatch'}
           $sig=Get-AuthenticodeSignature -FilePath $exe
           if(-not $sig.SignerCertificate -or $sig.SignerCertificate.Thumbprint -ne $receipt.signatureThumbprint){throw 'QA signature identity mismatch'}
-          Write-Host 'G5_QA_SHA256_AND_EPHEMERAL_SIGNER_VERIFIED'
+          # Establish cryptographic signature validity in this disposable VM only.
+          # Temporary local root trust is NOT public Code Signing trust.
+          $thumb=$sig.SignerCertificate.Thumbprint
+          $tempCert=Join-Path $env:RUNNER_TEMP 'g5-qa-ephemeral-public.cer'
+          [IO.File]::WriteAllBytes($tempCert,$sig.SignerCertificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+          try{
+            Import-Certificate -FilePath $tempCert -CertStoreLocation Cert:\CurrentUser\Root|Out-Null
+            $checked=Get-AuthenticodeSignature -FilePath $exe
+            if($checked.Status -ne 'Valid'){throw ('QA signature cryptographic verification failed: '+$checked.Status)}
+          }finally{
+            Remove-Item -LiteralPath ('Cert:\CurrentUser\Root\'+$thumb) -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $tempCert -Force -ErrorAction SilentlyContinue
+          }
+          Write-Host 'G5_QA_SIGNATURE_CRYPTOGRAPHICALLY_VALID_WITH_TEMPORARY_LOCAL_TRUST_ONLY'
+          $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
+          if(Test-Path $installed){throw 'Expected a clean Windows runner without Orca installed'}
           $p=Start-Process -FilePath $exe -ArgumentList '/S' -PassThru -Wait
           if($p.ExitCode -ne 0){throw "QA installer failed with exit code $($p.ExitCode)"}
           $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
@@ -48,6 +91,7 @@ jobs:
             sourceCommit=$receipt.sourceCommit
             setupSha256=$hash
             testSignatureOnly=$true
+            temporaryLocalTrustUsedForSignatureValidation=$true
             publicTrustVerified=$false
             installerExitCode=$p.ExitCode
             applicationInstalled=$true

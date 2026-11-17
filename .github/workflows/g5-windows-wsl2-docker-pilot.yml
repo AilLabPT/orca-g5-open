@@ -34,7 +34,7 @@ jobs:
           $root=Join-Path $env:RUNNER_TEMP 'g5-wsl2-pilot'
           $os=(& docker info --format '{{.OSType}}').Trim()
           if($LASTEXITCODE -ne 0 -or $os -ne 'linux'){throw 'Linux Docker not available'}
-          $container=(& docker run --rm --network none alpine:3.20 sh -c 'printf G5_LINUX_DOCKER_EXEC_OK')
+          $container=(& docker run --rm --network none alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -c 'printf G5_LINUX_DOCKER_EXEC_OK')
           if($LASTEXITCODE -ne 0 -or ($container | Out-String).Trim() -ne 'G5_LINUX_DOCKER_EXEC_OK'){
             throw 'Linux Docker container execution failed'
           }

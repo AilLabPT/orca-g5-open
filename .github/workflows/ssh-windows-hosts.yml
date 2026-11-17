@@ -174,11 +174,33 @@ jobs:
           $ErrorActionPreference='Stop'
           $os=(& docker info --format '{{.OSType}}').Trim()
           if($LASTEXITCODE -ne 0 -or $os -ne 'linux'){throw 'G5_WSL2_DOCKER_UNAVAILABLE'}
-          $out=& docker run --rm --network none alpine:3.20 sh -c 'echo G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'
+          $out=& docker run --rm --network none alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -c 'echo G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'
           if($LASTEXITCODE -ne 0 -or (($out|Out-String).Trim()) -ne 'G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'){
             throw 'G5 Docker execution on SSH host failed'
           }
           Write-Host 'G5_SSH_WINDOWS_LINUX_DOCKER_HOST_READY'
+      - name: Quiesce only the verified Windows inbox sshd on disposable G5 runner
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows'){
+            throw 'G5 inbox service change requires a disposable Windows GitHub runner'
+          }
+          $svc=Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
+          $expected=Join-Path $env:WINDIR 'System32/OpenSSH/sshd.exe'
+          if(-not $svc -or $svc.PathName.Trim('"') -ne $expected){
+            throw 'Refuse to stop an unknown SSH service'
+          }
+          $receipts=Join-Path $pwd '.build/ssh-windows-host-receipts'
+          New-Item -ItemType Directory -Force -Path $receipts |Out-Null
+          $wasRunning=($svc.State -eq 'Running')
+          [pscustomobject]@{wasRunning=$wasRunning; path=$svc.PathName; originalState=$svc.State} |
+            ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $receipts 'g5-existing-inbox-sshd.json')
+          if($wasRunning){Stop-Service -Name sshd -Force -ErrorAction Stop}
+          $after=Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          if($after.State -ne 'Stopped'){throw 'Global inbox SSH service did not stop'}
+          Write-Host 'G5_VERIFIED_GLOBAL_SSHD_QUIESCED_FOR_PRIVATE_SSH_TEST'
       - name: Self-test the provisioning scripts before touching the machine
         shell: pwsh
         run: |
@@ -284,6 +306,24 @@ jobs:
             & (Join-Path $tools 'invoke-windows-host-cells.ps1') -SourceRoot $sourceRoot -Context $context -Target 'win32-${{ matrix.arch }}' -ReceiptRoot $receipts -Cells $cells
           }.GetNewClosure()
           & (Join-Path $tools 'preview-ssh/prove-preview-openssh.ps1') -Archive $archive -Arch '${{ matrix.arch }}' -Server '${{ matrix.server }}' -Receipt (Join-Path $receipts 'provider-server.json') -InboxPreparationReceipt $preparation -Accounts $cells.Count -ForwardingAccounts $forwarding -HiddenTools @('npm','npx','node-gyp','gcc','g++','cc','c++','make','cl','clang','clang++','msbuild','cmake') -HostCellProbe $callback 2>&1 | Tee-Object (Join-Path $receipts 'provision.log')
+      - name: Restore the original trusted inbox SSH service state on G5 runner
+        if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          $r=Join-Path $pwd '.build/ssh-windows-host-receipts/g5-existing-inbox-sshd.json'
+          if(-not(Test-Path $r)){Write-Host 'No prior inbox SSH service change to restore';exit 0}
+          $prior=Get-Content $r -Raw |ConvertFrom-Json
+          $current=Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          $expected=Join-Path $env:WINDIR 'System32/OpenSSH/sshd.exe'
+          if(-not $current -or $current.PathName.Trim('"') -ne $expected){
+            throw 'Unexpected SSH service identity while restoring G5 CI'
+          }
+          if($prior.wasRunning -and $current.State -ne 'Running'){
+            Start-Service -Name sshd -ErrorAction Stop
+          }
+          $after=Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          if($prior.wasRunning -and $after.State -ne 'Running'){throw 'Failed to restore global SSH state'}
+          Write-Host 'G5_GLOBAL_INBOX_SSHD_RESTORED'
       - uses: actions/upload-artifact@v7
         if: always()
         with:
