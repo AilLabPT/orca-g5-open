@@ -8,6 +8,9 @@ param(
   [string]$ExpectedContainerId = '',
   [string]$CoordinationLock = '',
   [string]$OwnerToken = '',
+  [string]$BrokerClientSid = '',
+  [ValidateSet('', 'npipe:////./pipe/docker_engine', 'npipe:////./pipe/skrog_engine')]
+  [string]$BrokerDockerEndpoint = '',
   [switch]$Apply
 )
 Set-StrictMode -Version Latest
@@ -17,6 +20,25 @@ $Script:OrcaRoot = '/home/node/g5-managed'
 $Script:OwnerLock = ''
 $Script:HeldToken = ''
 $Script:ContainerIdentity = ''
+$Script:DockerExecutable = 'docker'
+$Script:DockerPrefix = @()
+$Script:CoordinationProfile = $env:USERPROFILE
+
+if ($BrokerClientSid -or $BrokerDockerEndpoint) {
+  if ($BrokerClientSid -notmatch '^S-1-5-(?:[0-9]+-)+[0-9]+$' -or
+      -not $BrokerDockerEndpoint -or -not $CoordinationLock -or
+      $ExpectedContainerId -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'G5 broker adapter requires a complete pinned configuration'
+  }
+  $profileKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$BrokerClientSid"
+  $profile = (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
+  $Script:CoordinationProfile = [Environment]::ExpandEnvironmentVariables($profile)
+  if ($Script:CoordinationProfile -notmatch '^[A-Za-z]:\\') {
+    throw 'G5 broker SSH profile is invalid'
+  }
+  $Script:DockerExecutable = Join-Path $env:WINDIR 'System32\docker.exe'
+  $Script:DockerPrefix = @('-H', $BrokerDockerEndpoint)
+}
 
 function Test-SafeWindowsPath([string]$PathValue) {
   if ($PathValue -notmatch '^[A-Za-z]:[\\/]' -or
@@ -48,6 +70,12 @@ function Assert-G5CoordinationOwner {
   $ownerPath = Join-Path $Script:OwnerLock '.orca-fence-owner'
   Assert-G5NoReparse $ownerPath
   if (-not [IO.File]::Exists($ownerPath)) { throw 'G5 coordination lock owner missing' }
+  if ($BrokerClientSid) {
+    $lockOwner = (Get-Acl -LiteralPath $Script:OwnerLock).GetOwner([Security.Principal.SecurityIdentifier])
+    if ($lockOwner.Value -cne $BrokerClientSid) {
+      throw 'G5 coordination lock belongs to a different Windows identity'
+    }
+  }
   $owner = [IO.File]::ReadAllText($ownerPath).Trim()
   if ($owner -cne $Script:HeldToken) { throw 'G5 coordination owner superseded' }
 }
@@ -62,7 +90,7 @@ function Initialize-G5Coordination {
   Test-SafeWindowsPath $CoordinationLock
   # The lock namespace is fixed by the native product, not by a caller-supplied
   # directory. Alternate roots would let two writers mutate the same container.
-  $canonicalRoot = Join-Path $env:USERPROFILE '.orca-remote'
+  $canonicalRoot = Join-Path $Script:CoordinationProfile '.orca-remote'
   $expectedPath = Join-Path $canonicalRoot (Get-G5ContainerLockName)
   $realPath = [IO.Path]::GetFullPath($CoordinationLock)
   $canonicalPath = [IO.Path]::GetFullPath($expectedPath)
@@ -96,7 +124,8 @@ function Invoke-Docker {
   $previousPreference = $ErrorActionPreference
   try {
     $ErrorActionPreference = 'Continue'
-    $output = & docker @Arguments 2>&1
+    $prefix = $Script:DockerPrefix
+    $output = & $Script:DockerExecutable @prefix @Arguments 2>&1
     $exitCode = $LASTEXITCODE
   } finally {
     $ErrorActionPreference = $previousPreference
@@ -295,7 +324,7 @@ if ($Action -eq 'Recover') {
   $after=Get-G5State
   [pscustomobject]@{ recovered=$true; active=$after.active;
     restartRequired=$true } | ConvertTo-Json -Compress
-  exit 0
+  return
 }
 $before = Get-G5State
 switch ($Action) {

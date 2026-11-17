@@ -3,6 +3,69 @@ import { execCommand } from '../../ssh/remote-exec/remote-exec-command'
 import type { OrcadHostTransport } from '../../ssh/orcad-host-transport'
 import type { RemoteHostPlatform } from '../../ssh/ssh-remote-platform'
 
+export type G5DockerConfig = {
+  adapterPath: string
+  container: string
+  expectedImageId: string
+  broker?: { clientPath: string; pipeName: string; serverPid: number }
+}
+
+type G5DockerExecution = {
+  conn: OrcadHostTransport
+  signal?: AbortSignal
+}
+
+type G5DockerCoordination = { lockDir: string; ownerToken: string }
+
+export async function executeG5DockerOperation(
+  options: G5DockerExecution,
+  config: G5DockerConfig,
+  coordination: G5DockerCoordination,
+  action: 'Status' | 'Ensure' | 'Recover' | 'Rollback',
+  expectedContainerId?: string
+): Promise<string> {
+  const broker = config.broker
+  if (!broker) {
+    const command = orcadWindowsNodeCommandLine('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-File', config.adapterPath,
+      '-Action', action, '-Container', config.container,
+      '-ExpectedImageId', config.expectedImageId,
+      ...(action === 'Status' ? [] : ['-Apply']),
+      '-CoordinationLock', coordination.lockDir, '-OwnerToken', coordination.ownerToken,
+      ...(expectedContainerId ? ['-ExpectedContainerId', expectedContainerId] : [])
+    ])
+    return execCommand(options.conn, command, { wrapCommand: false, signal: options.signal })
+  }
+  if (!/^[A-Za-z]:\\/u.test(broker.clientPath) ||
+      !broker.clientPath.toLowerCase().endsWith('.ps1') ||
+      /[%$"`\r\n]/u.test(broker.clientPath) ||
+      !/^g5-[a-z0-9-]{8,52}$/u.test(broker.pipeName) ||
+      !Number.isInteger(broker.serverPid) || broker.serverPid < 1 || broker.serverPid > 2147483647 ||
+      !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(coordination.ownerToken) ||
+      (action !== 'Status' && !expectedContainerId) ||
+      (expectedContainerId !== undefined && !/^[a-f0-9]{64}$/u.test(expectedContainerId))) {
+    throw new Error('G5 scoped Docker broker configuration is invalid')
+  }
+  const command = orcadWindowsNodeCommandLine('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-File', broker.clientPath,
+    '-PipeName', broker.pipeName, '-ExpectedServerPid', String(broker.serverPid),
+    '-Operation', action, '-OwnerToken', coordination.ownerToken,
+    '-TimeoutMs', '120000',
+    ...(expectedContainerId ? ['-ExpectedContainerId', expectedContainerId] : [])
+  ])
+  try {
+    return await execCommand(options.conn, command, {
+      wrapCommand: false, signal: options.signal, timeoutMs: 250_000
+    })
+  } catch (error) {
+    if (action === 'Status') throw error
+    // An SSH client exit cannot prove the broker's Docker worker stopped.
+    throw Object.assign(new Error('G5 broker mutation completion unknown', { cause: error }), {
+      sshChannelCloseConfirmed: false
+    })
+  }
+}
+
 /** Read-only immutable Docker container pin before any native journal or mutation.
  * Called while both native-slot and shared container locks are held.
  * The subsequent Ensure must reuse this verified immutable ID and fail on replacement.
@@ -12,7 +75,7 @@ export async function readPinnedG5DockerContainerId(
     conn: OrcadHostTransport
     host: RemoteHostPlatform
     signal?: AbortSignal
-    g5Docker: { adapterPath: string; container: string; expectedImageId: string }
+    g5Docker: G5DockerConfig
   },
   coordination: { lockDir: string; ownerToken: string }
 ): Promise<string> {
@@ -38,17 +101,7 @@ export async function readPinnedG5DockerContainerId(
       !/^[a-f0-9-]{36}$/u.test(coordination.ownerToken)) {
     throw new Error('G5 Docker preflight Windows authority configuration invalid')
   }
-  const command = orcadWindowsNodeCommandLine('powershell.exe', [
-    '-NoProfile', '-NonInteractive', '-File', config.adapterPath,
-    '-Action', 'Status', '-Container', config.container,
-    '-ExpectedImageId', config.expectedImageId,
-    '-CoordinationLock', coordination.lockDir,
-    '-OwnerToken', coordination.ownerToken
-  ])
-  const output = await execCommand(options.conn, command, {
-    wrapCommand: false,
-    signal: options.signal
-  })
+  const output = await executeG5DockerOperation(options, config, coordination, 'Status')
   const last = output.trim().split(/\r?\n/u).at(-1) ?? ''
   const parsed: unknown = JSON.parse(last)
   if (typeof parsed !== 'object' || parsed === null ||

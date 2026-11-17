@@ -30,7 +30,8 @@ vi.mock('./remote-versioned-install', () => ({
   finalizeInstall: vi.fn().mockResolvedValue(undefined),
   abandonInstall: vi.fn().mockResolvedValue(true)
 }))
-vi.mock('./orcad-g5-docker-preflight', () => ({
+vi.mock('./orcad-g5-docker-preflight', async (original) => ({
+  ...(await original<typeof PreflightModule>()),
   readPinnedG5DockerContainerId: vi.fn().mockResolvedValue('c'.repeat(64))
 }))
 vi.mock('./orcad-g5-reconciliation', async (original) => ({

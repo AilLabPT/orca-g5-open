@@ -7,7 +7,7 @@ vi.mock('../../ssh/remote-exec/remote-exec-command', async (original) => ({
 import { execCommand } from '../../ssh/remote-exec/remote-exec-command'
 import { getRemoteHostPlatform } from '../../ssh/ssh-remote-platform'
 import { unusedOrcadHostTransport } from '../../ssh/unused-host-transport.test-fixture'
-import { readPinnedG5DockerContainerId } from './orcad-g5-docker-preflight'
+import { executeG5DockerOperation, readPinnedG5DockerContainerId } from './orcad-g5-docker-preflight'
 
 const pinned='c'.repeat(64)
 const container='g5-isolated'
@@ -72,5 +72,31 @@ describe('G5 immutable Docker read-only preflight',()=>{
     command.mockResolvedValueOnce(JSON.stringify({...status,...override}))
     await expect(readPinnedG5DockerContainerId(config,coordination))
       .rejects.toThrow('could not pin')
+  })
+})
+
+describe('G5 Docker broker transport', () => {
+  const brokerConfig = {
+    ...config.g5Docker,
+    broker: { clientPath: 'C:\\g5\\client.ps1', pipeName: 'g5-test-broker', serverPid: 42 }
+  }
+
+  it.each(['Status', 'Ensure', 'Recover', 'Rollback'] as const)(
+    'sends %s to the authenticated broker client',
+    async (operation) => {
+      await executeG5DockerOperation(config, brokerConfig, coordination, operation, pinned)
+      const shell = command.mock.calls[0]?.[1] ?? ''
+      expect(shell).toContain(brokerConfig.broker.clientPath)
+      expect(shell).toContain(operation)
+      expect(shell).toContain(pinned)
+      expect(shell).not.toContain(config.g5Docker.adapterPath)
+    }
+  )
+
+  it('holds the installer fences when the broker mutation outcome is unknown', async () => {
+    command.mockRejectedValueOnce(new Error('broker client disconnected'))
+    await expect(
+      executeG5DockerOperation(config, brokerConfig, coordination, 'Ensure', pinned)
+    ).rejects.toMatchObject({ sshChannelCloseConfirmed: false })
   })
 })

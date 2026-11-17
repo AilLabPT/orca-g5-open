@@ -1,5 +1,5 @@
 # G5 constrained Windows named-pipe Docker capability broker.
-# EXPERIMENTAL: a narrowly scoped read-only proof; mutation intentionally unsupported.
+# Without a pinned deployment configuration, only the read-only probe is available.
 # Broker must run under a dedicated account that ALREADY has Docker access.
 # Never add the SSH account to Administrators or Docker daemon ACLs.
 [CmdletBinding()]
@@ -7,6 +7,9 @@ param(
   [Parameter(Mandatory)][ValidatePattern('^S-1-5-(?:[0-9]+-)+[0-9]+$')][string]$AuthorizedSid,
   [Parameter(Mandatory)][ValidatePattern('^g5-[a-z0-9-]{8,52}$')][string]$PipeName,
   [ValidateRange(1,10)][int]$MaxRequests=1,
+  [string]$Container = '',
+  [string]$ExpectedImageId = '',
+  [string]$ExpectedContainerId = '',
   [switch]$UseFixture
 )
 Set-StrictMode -Version Latest
@@ -29,6 +32,27 @@ $serverRights=[IO.Pipes.PipeAccessRule]::new($serverSid,[IO.Pipes.PipeAccessRigh
 $pipeSecurity.AddAccessRule($serverRights)
 # Capability verbs are fixed. No arbitrary command, Docker flags, paths, image IDs or mutation.
 $allowedVerbs=@('engine-linux')
+$deploymentVerbs = @()
+if ($Container -or $ExpectedImageId -or $ExpectedContainerId) {
+  if ($UseFixture -or $Container -cnotmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$' -or
+      $ExpectedImageId -cnotmatch '^sha256:[a-f0-9]{64}$' -or
+      $ExpectedContainerId -cnotmatch '^[a-f0-9]{64}$') {
+    throw 'G5_BROKER_INVALID_DEPLOYMENT_CONFIGURATION'
+  }
+  $deploymentVerbs = @('Status', 'Ensure', 'Recover', 'Rollback')
+  $profileKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$AuthorizedSid"
+  $profile = (Get-ItemProperty -LiteralPath $profileKey -Name ProfileImagePath).ProfileImagePath
+  $profileRoot = [Environment]::ExpandEnvironmentVariables($profile)
+  if ($profileRoot -notmatch '^[A-Za-z]:\\') { throw 'G5_BROKER_INVALID_SSH_PROFILE' }
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Container))).Replace('-', '').ToLowerInvariant()
+  } finally { $sha.Dispose() }
+  $lockDir = Join-Path (Join-Path $profileRoot '.orca-remote') ('.g5-container-' + $hash.Substring(0, 24) + '.lock')
+  $adapter = Join-Path $PSScriptRoot 'G5-Windows-DockerUpdater.ps1'
+  if (-not (Test-Path -LiteralPath $adapter -PathType Leaf)) { throw 'G5_BROKER_ADAPTER_MISSING' }
+}
+
 # The broker never resolves a command named 'docker' from PATH or SSH input.
 # Skrog installs the daemon client at this runner-admin-controlled system location.
 $dockerExe=Join-Path $env:WINDIR 'System32\docker.exe'
@@ -89,12 +113,40 @@ for($n=0;$n -lt $MaxRequests;$n++){
       [Console]::WriteLine("G5_BROKER_IDENTITY_READ {0:o}", [DateTime]::UtcNow)
       $body=$null
       if($request){try{$body=$request|ConvertFrom-Json}catch{}}
-      if($principalSid -cne $AuthorizedSid -or !$body -or
-         @($body.PSObject.Properties).Count -ne 1 -or
-         $body.PSObject.Properties.Name -notcontains 'op' -or
-         $body.op -cnotin $allowedVerbs){
+      $properties = if ($body -is [pscustomobject]) { @($body.PSObject.Properties.Name) }
+      $op = if ($properties -ccontains 'op' -and $body.op -is [string]) { $body.op }
+      $isProbe = @($properties).Count -eq 1 -and $op -cin $allowedVerbs
+      $hasToken = $properties -ccontains 'ownerToken' -and $body.ownerToken -is [string] -and
+        $body.ownerToken -cmatch '^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+      $hasExpectedId = $properties -ccontains 'containerId' -and
+        $body.containerId -is [string] -and $body.containerId -ceq $ExpectedContainerId
+      $isDeployment = $op -cin $deploymentVerbs -and $hasToken -and (
+        ($op -ceq 'Status' -and @($properties).Count -eq 2) -or
+        (@($properties).Count -eq 3 -and $hasExpectedId)
+      )
+      if ($principalSid -cne $AuthorizedSid -or (-not $isProbe -and -not $isDeployment)) {
         [Console]::WriteLine("G5_BROKER_NOT_AUTHORIZED {0:o}", [DateTime]::UtcNow)
         $writer.WriteLine('{"ok":false,"code":"NOT_AUTHORIZED"}')
+        continue
+      }
+      if ($isDeployment) {
+        $parameters = @{
+          Action = $op
+          Container = $Container
+          ExpectedImageId = $ExpectedImageId
+          ExpectedContainerId = $ExpectedContainerId
+          CoordinationLock = $lockDir
+          OwnerToken = $body.ownerToken
+          BrokerClientSid = $AuthorizedSid
+          BrokerDockerEndpoint = $contextEndpoint
+        }
+        if ($op -cne 'Status') { $parameters.Apply = $true }
+        $result = @(& $adapter @parameters)
+        if ($result.Count -ne 1 -or $result[0] -isnot [string] -or $result[0].Length -gt 768) {
+          throw 'G5_BROKER_INVALID_ADAPTER_RECEIPT'
+        }
+        $receipt = $result[0] | ConvertFrom-Json -ErrorAction Stop
+        $writer.WriteLine((@{ok=$true; operation=$op; receipt=$receipt} | ConvertTo-Json -Compress -Depth 5))
         continue
       }
       if($UseFixture){
