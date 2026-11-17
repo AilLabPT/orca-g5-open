@@ -156,6 +156,21 @@ try {
         foreach($scriptPath in @($serverScript,$clientScript)){
           if(-not(Test-Path -LiteralPath $scriptPath)){throw 'Required G5 broker script missing'}
         }
+        # The privileged source tree is deliberately non-executable by this
+        # account after ACL hardening. Stage ONLY the unprivileged client in its
+        # own disposable profile, and verify copied bytes. Client script bytes
+        # are not an authority: the broker independently authenticates SID.
+        $stagedClient=Join-Path $account.home '.g5-scoped-broker-client.ps1'
+        if(-not(Test-Path -LiteralPath $account.home -PathType Container) -or
+           (Test-Path -LiteralPath $stagedClient)){
+          throw 'G5 disposable SSH client profile path missing or already occupied'
+        }
+        Copy-Item -LiteralPath $clientScript -Destination $stagedClient -ErrorAction Stop
+        $sourceHash=(Get-FileHash -LiteralPath $clientScript -Algorithm SHA256).Hash
+        $stagedHash=(Get-FileHash -LiteralPath $stagedClient -Algorithm SHA256).Hash
+        if($sourceHash -cne $stagedHash){throw 'G5 staged SSH client byte integrity failed'}
+        & icacls.exe $stagedClient '/grant:r' ('*'+$account.sid+':(RX)') | Out-Null
+        if($LASTEXITCODE -ne 0){throw 'G5 staged SSH client file is not readable'}
         # On this disposable runner, explicitly prevent the SSH user from
         # replacing privileged broker code or its containing directories.
         # A deny-write ACE targets only the ephemeral account's exact SID.
@@ -176,7 +191,7 @@ try {
         try{
           Start-Sleep -Milliseconds 900
           if($serverProcess.HasExited){throw 'G5 broker exited before SSH client connection'}
-          $clientCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$clientScript+'" -PipeName '+$pipeName+' -ExpectedServerPid '+$serverProcess.Id
+          $clientCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$stagedClient+'" -PipeName '+$pipeName+' -ExpectedServerPid '+$serverProcess.Id
           $clientResult=Invoke-PrivateSsh $account.name $clientCommand -ReturnDetails
           if($clientResult.exitCode -ne 0){
             # The client has no secret values; record only bounded diagnostic
@@ -204,6 +219,7 @@ try {
         }finally{
           if(-not $serverProcess.HasExited){Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue}
           $serverProcess.Dispose()
+          Remove-Item -LiteralPath $stagedClient -Force -ErrorAction SilentlyContinue
         }
       }else{
         $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess).Trim()
