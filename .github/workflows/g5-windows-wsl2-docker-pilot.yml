@@ -13,7 +13,7 @@ permissions:
 jobs:
   linux-docker-windows:
     if: github.repository == 'AilLabPT/orca-g5-open'
-    runs-on: windows-2022
+    runs-on: windows-latest
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -51,11 +51,25 @@ jobs:
           }
           $result|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $root 'receipt.json')
           Write-Host 'G5_WINDOWS_LINUX_DOCKER_PILOT_PASS'
+      - name: Inspect existing Windows OpenSSH service without modifications
+        shell: pwsh
+        run: |
+          $root=Join-Path $env:RUNNER_TEMP 'g5-wsl2-pilot'
+          $svc=Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction SilentlyContinue
+          $r=[ordered]@{
+            serviceExists=($null -ne $svc)
+            state=if($svc){$svc.State}else{'Absent'}
+            path=if($svc){$svc.PathName}else{''}
+            startMode=if($svc){$svc.StartMode}else{''}
+            inboxFileExists=(Test-Path (Join-Path $env:WINDIR 'System32/OpenSSH/sshd.exe'))
+          }
+          $r|ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $root 'sshd-inventory.json')
+          Write-Host ('G5_SSHD_INVENTORY='+($r|ConvertTo-Json -Compress))
       - name: Upload scoped evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: g5-windows-2022-wsl2-linux-docker-pilot
+          name: g5-windows-latest-wsl2-linux-docker-sshd-inventory
           path: ${{ runner.temp }}/g5-wsl2-pilot/
           if-no-files-found: warn
           retention-days: 7
