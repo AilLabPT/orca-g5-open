@@ -93,10 +93,23 @@ jobs:
           Write-Host 'G5_QA_SIGNATURE_CRYPTOGRAPHICALLY_VALID_WITH_TEMPORARY_LOCAL_TRUST_ONLY'
           $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
           if(Test-Path $installed){throw 'Expected a clean Windows runner without Orca installed'}
-          $p=Start-Process -FilePath $exe -ArgumentList '/S' -PassThru -Wait
-          if($p.ExitCode -ne 0){throw "QA installer failed with exit code $($p.ExitCode)"}
+          $p=Start-Process -FilePath $exe -ArgumentList '/S' -PassThru
+          try{
+            # Wait for the installer PID only. PowerShell Start-Process -Wait can
+            # also wait on the Electron app's surviving descendant processes.
+            if(-not $p.WaitForExit(180000)){
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              throw 'QA NSIS installer process exceeded 180-second deadline'
+            }
+            if($p.ExitCode -ne 0){throw "QA installer failed with exit code $($p.ExitCode)"}
+          }finally{$p.Dispose()}
           $installed=Join-Path $env:LOCALAPPDATA 'Programs/Orca/Orca.exe'
-          if(-not(Test-Path $installed)){throw 'QA Orca executable absent after installation'}
+          $found=$false
+          for($i=0;$i -lt 60;$i++){
+            if(Test-Path $installed){$found=$true;break}
+            Start-Sleep -Seconds 1
+          }
+          if(-not $found){throw 'QA Orca executable absent after installation'}
           $proof=[ordered]@{
             sourceCommit=$receipt.sourceCommit
             setupSha256=$hash
