@@ -150,7 +150,7 @@ try {
         try{
           Start-Sleep -Milliseconds 900
           if($serverProcess.HasExited){throw 'G5 broker exited before SSH client connection'}
-          $clientCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$clientScript+'" -PipeName '+$pipeName
+          $clientCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$clientScript+'" -PipeName '+$pipeName+' -ExpectedServerPid '+$serverProcess.Id
           $reply=(Invoke-PrivateSsh $account.name $clientCommand -RequireSuccess).Trim()
           if($reply -cne 'G5_SCOPED_BROKER_ENGINE_LINUX_OK'){
             throw 'G5 scoped SSH identity broker did not prove Linux Docker'

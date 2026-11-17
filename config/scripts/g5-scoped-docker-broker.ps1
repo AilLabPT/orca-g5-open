@@ -29,10 +29,18 @@ $serverRights=[IO.Pipes.PipeAccessRule]::new($serverSid,[IO.Pipes.PipeAccessRigh
 $pipeSecurity.AddAccessRule($serverRights)
 # Capability verbs are fixed. No arbitrary command, Docker flags, paths, image IDs or mutation.
 $allowedVerbs=@('engine-linux')
+# The broker never resolves a command named 'docker' from PATH or SSH input.
+# Skrog installs the daemon client at this runner-admin-controlled system location.
+$dockerExe=Join-Path $env:WINDIR 'System32\docker.exe'
+if(-not $UseFixture){
+  if(-not(Test-Path -LiteralPath $dockerExe -PathType Leaf)){throw 'G5_BROKER_PINNED_DOCKER_EXECUTABLE_MISSING'}
+  $file=Get-Item -LiteralPath $dockerExe -Force
+  if(($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'G5_BROKER_DOCKER_REPARSE_FORBIDDEN'}
+}
 for($n=0;$n -lt $MaxRequests;$n++){
   $pipe=New-Object IO.Pipes.NamedPipeServerStream -ArgumentList @(
     $PipeName,[IO.Pipes.PipeDirection]::InOut,1,[IO.Pipes.PipeTransmissionMode]::Byte,
-    [IO.Pipes.PipeOptions]::None,4096,4096,$pipeSecurity
+    [IO.Pipes.PipeOptions]::Asynchronous,4096,4096,$pipeSecurity
   )
   try{
     $pipe.WaitForConnection()
@@ -42,18 +50,30 @@ for($n=0;$n -lt $MaxRequests;$n++){
     try{
       # Windows named-pipe impersonation is only available AFTER client bytes arrive.
       # Reading an untrusted request never grants authorization or runs Docker.
-      $request=$reader.ReadLine()
+      $buffer=New-Object char[] 1
+      $chars=[Text.StringBuilder]::new()
+      $deadline=[DateTime]::UtcNow.AddSeconds(6)
+      while($chars.Length -le 256){
+        $remaining=[int]([Math]::Max(1,($deadline-[DateTime]::UtcNow).TotalMilliseconds))
+        if($remaining -le 1){throw 'G5_BROKER_REQUEST_TIMEOUT'}
+        $readTask=$reader.ReadAsync($buffer,0,1)
+        if(-not $readTask.Wait($remaining)){throw 'G5_BROKER_REQUEST_TIMEOUT'}
+        if($readTask.Result -ne 1){throw 'G5_BROKER_REQUEST_INCOMPLETE'}
+        if($buffer[0] -eq [char]10){break}
+        if($buffer[0] -ne [char]13){$null=$chars.Append($buffer[0])}
+      }
+      if($chars.Length -gt 256){throw 'G5_BROKER_REQUEST_TOO_LONG'}
+      $request=$chars.ToString()
       $script:principalSid=$null
       $pipe.RunAsClient([IO.Pipes.PipeStreamImpersonationWorker]{
         $script:principalSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value
       })
-      if($request -and $request.Length -gt 256){throw 'G5_BROKER_REQUEST_TOO_LONG'}
       $body=$null
       if($request){try{$body=$request|ConvertFrom-Json}catch{}}
       if($principalSid -cne $AuthorizedSid -or !$body -or
-         $body.PSObject.Properties.Name.Count -ne 1 -or
+         @($body.PSObject.Properties).Count -ne 1 -or
          $body.PSObject.Properties.Name -notcontains 'op' -or
-         $body.op -notin $allowedVerbs){
+         $body.op -cnotin $allowedVerbs){
         $writer.WriteLine('{"ok":false,"code":"NOT_AUTHORIZED"}')
         continue
       }
@@ -63,7 +83,7 @@ for($n=0;$n -lt $MaxRequests;$n++){
         $p=$ErrorActionPreference
         try{
           $ErrorActionPreference='Continue'
-          $output=& docker info --format '{{.OSType}}' 2>&1
+          $output=& $dockerExe --context skrog info --format '{{.OSType}}' 2>&1
           $status=$LASTEXITCODE
         }finally{$ErrorActionPreference=$p}
         if($status -ne 0){throw 'DOCKER_ENGINE_UNAVAILABLE'}
