@@ -5,6 +5,17 @@ name: SSH Windows hosts
 # standard account per cell (config/ci/windows-ssh-provider/), hides the host toolchain from SSH
 # sessions behind logging shims, and deploys orcad on the pinned node.exe in both DefaultShell cases.
 on:
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/ssh-windows-hosts.yml'
+      - 'config/scripts/g5-scoped-docker-broker*.ps1'
+      - 'config/scripts/G5-Windows-DockerUpdater.ps1'
+      - 'config/scripts/g5-live-pty-probe.py'
+      - 'config/scripts/test-g5-docker-isolation.ps1'
+      - 'config/ci/windows-ssh-provider/**'
+      - 'src/main/managed-server/install/orcad-g5-*.ts'
+      - 'src/main/managed-server/install/orcad-remote-install.ts'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths:
@@ -57,6 +68,7 @@ on:
       - 'tests/e2e/helpers/compiled-orca-cli.ts'
       - 'tests/e2e/helpers/windows-host-orcad-processes.ts'
       - 'config/ci/windows-ssh-provider/**'
+      - 'config/scripts/g5-scoped-docker-broker*.ps1'
       - 'config/ci/windows-lifecycle-receipt.ps1'
       - '.github/workflows/ssh-windows-hosts.yml'
       - '.github/actions/prepare-orcad-prebuilds/**'
@@ -64,6 +76,21 @@ on:
       - 'config/scripts/orcad-windows-prebuild-cache.mjs'
   workflow_dispatch:
     inputs:
+      g5_x64_only:
+        description: Restrict G5 qualification to the standard Windows x64 inbox SSH runner.
+        type: boolean
+        required: false
+        default: false
+      g5_linux_docker:
+        description: Provision pinned WSL2 Linux Docker on same disposable Windows x64 SSH runner.
+        type: boolean
+        required: false
+        default: false
+      g5_scoped_broker_probe:
+        description: Verify read-only SID-restricted Docker broker via actual standard SSH user; does not qualify installer mutations.
+        type: boolean
+        required: false
+        default: false
       cells:
         description: Comma-separated cell ids from src/main/ssh/ssh-windows-host-cells.ts; empty runs the default set (orcad-cli-* cells run only when named).
         required: false
@@ -115,7 +142,11 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
+          ${{ fromJSON((github.event_name == 'push' || inputs.g5_linux_docker) &&
+          '[{"arch":"x64","runner":"windows-latest","server":"inbox"}]' ||
+          github.event_name == 'workflow_dispatch' && inputs.g5_x64_only &&
+          '[{"arch":"x64","runner":"windows-2022","server":"inbox"}]' ||
+          github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
           '[{"arch":"arm64","runner":"windows-11-arm","server":"inbox"}]' ||
           '[{"arch":"x64","runner":"windows-2022","server":"inbox"},{"arch":"x64","runner":"windows-2022","server":"preview","archive":"OpenSSH-Win64.zip"},{"arch":"arm64","runner":"windows-11-arm","server":"inbox"},{"arch":"arm64","runner":"windows-11-arm","server":"preview","archive":"OpenSSH-ARM64.zip"}]') }}
     runs-on: ${{ matrix.runner }}
@@ -125,6 +156,8 @@ jobs:
     env:
       ORCA_BACKGROUND_LAUNCH: '1'
       ORCA_ISOLATED_SSH_CI: '1'
+      ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE: ${{ (github.event_name == 'push' || inputs.g5_linux_docker) && '1' || '0' }}
+      ORCA_G5_SCOPED_BROKER_PROBE: ${{ (github.event_name == 'push' || (inputs.g5_linux_docker && inputs.g5_scoped_broker_probe)) && '1' || '0' }}
       INBOX_PREPARATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.preparation_mode == 'serial' && 'serial' || 'overlap' }}
     steps:
       - uses: actions/checkout@v6
@@ -143,6 +176,56 @@ jobs:
             resources
             tests
             src
+      - name: Enforce scoped broker pilot prerequisite
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_scoped_broker_probe && !inputs.g5_linux_docker }}
+        shell: pwsh
+        run: throw 'G5 scoped broker probe requires isolated Linux Docker runner'
+      - name: Test G5 Docker runtime isolation rules before preparing the SSH host
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -File config/scripts/test-g5-docker-isolation.ps1
+          if($LASTEXITCODE -ne 0){throw 'G5 Docker isolation contract failed'}
+      - name: Provision pinned Linux Docker engine on isolated G5 Windows runner
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
+        uses: wslkit/setup-skrog@cd2cba80924975b0c77217947c228da8aac17b1f
+        with:
+          version: '0.11.0'
+          wait: 3m
+      - name: Verify Linux Docker engine and container on SSH host machine
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $os=(& docker info --format '{{.OSType}}').Trim()
+          if($LASTEXITCODE -ne 0 -or $os -ne 'linux'){throw 'G5_WSL2_DOCKER_UNAVAILABLE'}
+          $out=& docker run --rm --network none alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc sh -c 'echo G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'
+          if($LASTEXITCODE -ne 0 -or (($out|Out-String).Trim()) -ne 'G5_SAME_WINDOWS_RUNNER_LINUX_DOCKER_OK'){
+            throw 'G5 Docker execution on SSH host failed'
+          }
+          Write-Host 'G5_SSH_WINDOWS_LINUX_DOCKER_HOST_READY'
+      - name: Quiesce only the verified Windows inbox sshd on disposable G5 runner
+        if: ${{ env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_OS -ne 'Windows'){
+            throw 'G5 inbox service change requires a disposable Windows GitHub runner'
+          }
+          $svc=Get-CimInstance Win32_Service -Filter "Name='sshd'" -ErrorAction Stop
+          $expected=Join-Path $env:WINDIR 'System32/OpenSSH/sshd.exe'
+          if(-not $svc -or $svc.PathName.Trim('"') -ne $expected){
+            throw 'Refuse to stop an unknown SSH service'
+          }
+          $receipts=Join-Path $pwd '.build/ssh-windows-host-receipts'
+          New-Item -ItemType Directory -Force -Path $receipts |Out-Null
+          $wasRunning=($svc.State -eq 'Running')
+          [pscustomobject]@{wasRunning=$wasRunning; path=$svc.PathName; originalState=$svc.State} |
+            ConvertTo-Json|Set-Content -Encoding UTF8 (Join-Path $receipts 'g5-existing-inbox-sshd.json')
+          if($wasRunning){Stop-Service -Name sshd -Force -ErrorAction Stop}
+          $after=Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          if($after.State -ne 'Stopped'){throw 'Global inbox SSH service did not stop'}
+          Write-Host 'G5_VERIFIED_GLOBAL_SSHD_QUIESCED_FOR_PRIVATE_SSH_TEST'
       - name: Self-test the provisioning scripts before touching the machine
         shell: pwsh
         run: |
@@ -248,6 +331,24 @@ jobs:
             & (Join-Path $tools 'invoke-windows-host-cells.ps1') -SourceRoot $sourceRoot -Context $context -Target 'win32-${{ matrix.arch }}' -ReceiptRoot $receipts -Cells $cells
           }.GetNewClosure()
           & (Join-Path $tools 'preview-ssh/prove-preview-openssh.ps1') -Archive $archive -Arch '${{ matrix.arch }}' -Server '${{ matrix.server }}' -Receipt (Join-Path $receipts 'provider-server.json') -InboxPreparationReceipt $preparation -Accounts $cells.Count -ForwardingAccounts $forwarding -HiddenTools @('npm','npx','node-gyp','gcc','g++','cc','c++','make','cl','clang','clang++','msbuild','cmake') -HostCellProbe $callback 2>&1 | Tee-Object (Join-Path $receipts 'provision.log')
+      - name: Restore the original trusted inbox SSH service state on G5 runner
+        if: ${{ always() && env.ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE == '1' && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          $r=Join-Path $pwd '.build/ssh-windows-host-receipts/g5-existing-inbox-sshd.json'
+          if(-not(Test-Path $r)){Write-Host 'No prior inbox SSH service change to restore';exit 0}
+          $prior=Get-Content $r -Raw |ConvertFrom-Json
+          $current=Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          $expected=Join-Path $env:WINDIR 'System32/OpenSSH/sshd.exe'
+          if(-not $current -or $current.PathName.Trim('"') -ne $expected){
+            throw 'Unexpected SSH service identity while restoring G5 CI'
+          }
+          if($prior.wasRunning -and $current.State -ne 'Running'){
+            Start-Service -Name sshd -ErrorAction Stop
+          }
+          $after=Get-CimInstance Win32_Service -Filter "Name='sshd'"
+          if($prior.wasRunning -and $after.State -ne 'Running'){throw 'Failed to restore global SSH state'}
+          Write-Host 'G5_GLOBAL_INBOX_SSHD_RESTORED'
       - uses: actions/upload-artifact@v7
         if: always()
         with:

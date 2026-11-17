@@ -48,6 +48,7 @@ export type OrcadWindowsHostOp =
   | 'build-hash'
   | 'record-read'
   | 'record-publish'
+  | 'g5-lock-release'
   | 'slot-runtime'
   | 'remove-file'
   | 'remove-tree'
@@ -208,12 +209,22 @@ const ops = {
   },
 
   // Antivirus holding the record open shows up as EPERM/EACCES/EBUSY; retry briefly.
-  'record-publish'(staged, file) {
+  'record-publish'(staged, file, lockDir, ownerToken) {
+    const checkG5Owner = () => {
+      const effectiveLock = lockDir || FENCE_DIR
+      const effectiveToken = ownerToken || FENCE_TOKEN
+      if (Boolean(effectiveLock) !== Boolean(effectiveToken)) throw Error('incomplete G5 publish fence')
+      if (effectiveLock && fenceOwner(effectiveLock) !== effectiveToken) {
+        throw Error('G5 journal publication owner superseded')
+      }
+    }
+    checkG5Owner()
     const fd = fs.openSync(staged, 'r+')
     try { fs.fsyncSync(fd) } finally { fs.closeSync(fd) }
     const delays = [50, 100, 150, 200, 250]
     let attempt = 0
     const publish = () => {
+      checkG5Owner() // Retry timers may outlive the initial fence decision.
       try { fs.renameSync(staged, file) } catch (error) {
         if (['EPERM', 'EACCES', 'EBUSY'].includes(error.code) && attempt < delays.length) {
           setTimeout(publish, delays[attempt++])
@@ -224,6 +235,20 @@ const ops = {
       answer('')
     }
     publish()
+  },
+
+  // Owner-checked G5 container/native lock release. Rename aside before deleting so a
+  // delayed former owner cannot remove a successor's lock.
+  'g5-lock-release'(lockDir, token) {
+    if (fenceOwner(lockDir) !== token) return answer('SUPERSEDED')
+    const aside = lockDir + '.g5-released.' + process.pid + '.' + crypto.randomUUID()
+    fs.renameSync(lockDir, aside)
+    if (fenceOwner(aside) === token) {
+      fs.rmSync(aside, { recursive: true, force: true, maxRetries: 5 })
+      return answer('RELEASED')
+    }
+    if (!fs.existsSync(lockDir)) fs.renameSync(aside, lockDir)
+    answer('SUPERSEDED')
   },
 
   // Loading at all proves this content-addressed file is whole.

@@ -1,4 +1,5 @@
-import { lstatSync, readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { createRequire } from 'node:module'
 import { createProcessTableSnapshotReader } from '../../shared/process-table-snapshot-reader'
 import { ORCAD_WINDOWS_PROCESS_TREE_FILENAME } from '../../shared/orcad-artifacts'
@@ -75,21 +76,42 @@ const RELAY_ADDON_FILENAME = `./${ORCAD_WINDOWS_PROCESS_TREE_FILENAME}`
 /** The import whose absence tells the patched binary from the published prebuilt. */
 const FLAGGED_ADDON_IMPORT = 'ReadProcessMemory'
 
-/** Reject staged addons importing ReadProcessMemory: independently deployed old binaries can load yet restore EDR-flagged PEB reads. Match the build inspector without importing its node-gyp/child_process dependencies; fall back to CIM. */
-function stagedRelayAddonIsUnpatched(): boolean {
-  // Missing resolver denotes a test double; production resolves the binary it just loaded.
-  const addonPath = requireNative.resolve?.(RELAY_ADDON_FILENAME)
-  if (!addonPath) {
-    return false
-  }
+/** Screen the actual native file before the module loader executes it.
+ * The import scan is a fail-closed compatibility safeguard, not a cryptographic attestation.
+ */
+function unsafeWindowsProcessAddonBinary(addonPath: string): boolean {
   try {
     const metadata = lstatSync(addonPath)
-    // Reject unreadable, non-regular and linked binaries before loading code.
     if (!metadata.isFile() || metadata.isSymbolicLink()) return true
     return readFileSync(addonPath).includes(FLAGGED_ADDON_IMPORT)
   } catch {
-    // An unreadable binary cannot be trusted, even if the npm wrapper exists.
     return true
+  }
+}
+
+/** Reject the staged relay when it still has the old PEB memory reader. */
+function stagedRelayAddonIsUnpatched(): boolean {
+  // A missing resolver denotes a test double; production always resolves its native file.
+  const addonPath = requireNative.resolve?.(RELAY_ADDON_FILENAME)
+  return addonPath ? unsafeWindowsProcessAddonBinary(addonPath) : false
+}
+
+/** Resolve a concrete native binary from the npm package, then load THAT file directly.
+ * Never inspect one .node file and delegate execution to a wrapper that may choose another.
+ * Missing resolver is supported only for injected minimal test doubles.
+ */
+function desktopNpmAddonBinary(): string | null | undefined {
+  if (!requireNative.resolve) return undefined
+  try {
+    const entry = requireNative.resolve('@vscode/windows-process-tree')
+    const build = resolve(dirname(entry), '..', 'build')
+    const preferred = resolve(build, `orca-napi-win32-${process.arch}`, 'windows_process_tree.node')
+    const nativeFile = existsSync(preferred)
+      ? preferred
+      : resolve(build, 'Release', 'windows_process_tree.node')
+    return unsafeWindowsProcessAddonBinary(nativeFile) ? null : nativeFile
+  } catch {
+    return null
   }
 }
 
@@ -148,7 +170,26 @@ function loadWindowsProcessTree(): WindowsProcessTreeModule | null {
     }
   }
   try {
-    cachedModule = requireNative('@vscode/windows-process-tree') as WindowsProcessTreeModule
+    const selectedBinary = desktopNpmAddonBinary()
+    if (selectedBinary === null) {
+      console.warn(
+        `[windows-process-table] desktop npm native addon imports ${FLAGGED_ADDON_IMPORT}, ` +
+          'or could not be verified. Refusing to load it.'
+      )
+      cachedModule = null
+      return cachedModule
+    }
+    if (selectedBinary === undefined) {
+      // Test-only injection with no resolve(); production createRequire always resolves.
+      cachedModule = requireNative('@vscode/windows-process-tree') as WindowsProcessTreeModule
+      return cachedModule
+    }
+    const addon = requireNative(selectedBinary) as WindowsProcessTreeAddon
+    if (typeof addon?.getProcessList !== 'function') {
+      cachedModule = null
+      return cachedModule
+    }
+    cachedModule = adaptAddon(addon)
     return cachedModule
   } catch {
     // Test doubles without resolve() and legacy relays use the bare addon.

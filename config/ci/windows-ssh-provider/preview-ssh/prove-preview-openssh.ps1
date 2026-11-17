@@ -357,7 +357,7 @@ $(@($accountNames | Select-Object -Last $ForwardingAccounts | ForEach-Object {"M
     }
     if($HostCellProbe){
       Write-Stage 'host-cell-probe-start'
-      & $HostCellProbe @{accounts=@($ownedAccounts | ForEach-Object {@{name=$_.name;home=$_.home}});port=$port;identityFile=$clientKey;knownHosts=$known;forbiddenToolLog=$toolLog;sshExe=$ssh;sshdLog=$sshdLog}
+      & $HostCellProbe @{accounts=@($ownedAccounts | ForEach-Object {@{name=$_.name;home=$_.home;sid=$_.sid}});port=$port;identityFile=$clientKey;knownHosts=$known;forbiddenToolLog=$toolLog;sshExe=$ssh;sshdLog=$sshdLog}
       $report.hostCellProbe='passed'
       Write-Stage 'host-cell-probe-complete'
     }
