@@ -76,3 +76,18 @@ foreach($case in @('clean','privileged','privileged-not-bool','publish-not-bool'
 }
 if($ok -ne 12){throw 'G5 isolation test coverage incomplete'}
 Write-Host 'G5_ISOLATION_CONTRACT_12_OF_12_PASS'
+
+foreach ($action in @('Install', 'Ensure', 'Recover', 'Rollback')) {
+  $script:Commands = @()
+  $rejected = $false
+  try {
+    . $adapter -Action $action -Container 'g5-isolated-unit' -ExpectedImageId $image -Apply
+  } catch {
+    if ($_.Exception.Message -ne 'G5 mutation requires a pinned immutable Docker container ID') { throw }
+    $rejected = $true
+  }
+  if (-not $rejected -or $script:Commands.Count -ne 0) {
+    throw "G5 unpinned mutation reached Docker: $action"
+  }
+  Write-Host "G5_UNPINNED_MUTATION_REJECTED_$action"
+}
