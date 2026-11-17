@@ -5,6 +5,10 @@ name: SSH Windows hosts
 # standard account per cell (config/ci/windows-ssh-provider/), hides the host toolchain from SSH
 # sessions behind logging shims, and deploys orcad on the pinned node.exe in both DefaultShell cases.
 on:
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/ssh-windows-hosts.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
     paths:
@@ -115,7 +119,9 @@ jobs:
       fail-fast: false
       matrix:
         include: >-
-          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
+          ${{ fromJSON(github.event_name == 'push' &&
+          '[{"arch":"x64","runner":"windows-2022","server":"inbox"}]' ||
+          github.event_name == 'workflow_dispatch' && inputs.arm_inbox_only &&
           '[{"arch":"arm64","runner":"windows-11-arm","server":"inbox"}]' ||
           '[{"arch":"x64","runner":"windows-2022","server":"inbox"},{"arch":"x64","runner":"windows-2022","server":"preview","archive":"OpenSSH-Win64.zip"},{"arch":"arm64","runner":"windows-11-arm","server":"inbox"},{"arch":"arm64","runner":"windows-11-arm","server":"preview","archive":"OpenSSH-ARM64.zip"}]') }}
     runs-on: ${{ matrix.runner }}
