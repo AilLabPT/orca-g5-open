@@ -26,6 +26,9 @@ vi.mock('./remote-versioned-install', () => ({
   finalizeInstall: vi.fn().mockResolvedValue(undefined),
   abandonInstall: vi.fn().mockResolvedValue(true)
 }))
+vi.mock('./orcad-g5-docker-preflight', () => ({
+  readPinnedG5DockerContainerId: vi.fn().mockResolvedValue('c'.repeat(64))
+}))
 vi.mock('./orcad-g5-reconciliation', async (original) => ({
   ...(await original<Record<string, unknown>>()),
   readG5ReconciliationRecord: vi.fn().mockResolvedValue(null),
@@ -45,6 +48,7 @@ import {
   releaseOwnedG5Lock
 } from './orcad-g5-reconciliation'
 import { acquireInstallLock } from './remote-install-lock'
+import { readPinnedG5DockerContainerId } from './orcad-g5-docker-preflight'
 import { abandonInstall } from './remote-versioned-install'
 const name = process.env.G5_WINDOWS_TEST_CONTAINER
 const image = process.env.G5_WINDOWS_TEST_IMAGE
@@ -71,6 +75,7 @@ beforeEach(()=>{
   vi.mocked(isRemoteInstallComplete).mockResolvedValue(true)
   vi.mocked(finalizeInstall).mockResolvedValue(undefined)
   vi.mocked(readG5ReconciliationRecord).mockResolvedValue(null)
+  vi.mocked(readPinnedG5DockerContainerId).mockResolvedValue('c'.repeat(64))
   vi.mocked(publishG5ReconciliationRecord).mockResolvedValue(undefined)
   vi.mocked(releaseOwnedG5Lock).mockResolvedValue(undefined)
   vi.mocked(acquireInstallLock).mockResolvedValue(undefined)
@@ -382,6 +387,32 @@ describe('G5 Docker bridge fail-closed status qualification', () => {
       JSON.stringify({ ...healthyStatus, healthy: false, protocolVersion: 0 })
     )
     await expect(launch(bridge)).rejects.toThrow('Docker verification failed')
+    expect(finalizeInstall).not.toHaveBeenCalled()
+  })
+
+  it('writes the verified immutable ID into pending before any Docker mutation', async () => {
+    vi.mocked(cachedOrcadSlotInstalled).mockResolvedValue(false)
+    vi.mocked(isRemoteInstallComplete).mockResolvedValue(false)
+    command.mockResolvedValueOnce(ensureReceipt).mockResolvedValueOnce(JSON.stringify(healthyStatus))
+    await launch(bridge)
+    const record=vi.mocked(publishG5ReconciliationRecord).mock.calls[0]?.[2]
+    expect(record?.phase).toBe('pending')
+    expect(record?.containerId).toBe('c'.repeat(64))
+    expect(vi.mocked(readPinnedG5DockerContainerId).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(publishG5ReconciliationRecord).mock.invocationCallOrder[0])
+    expect(vi.mocked(publishG5ReconciliationRecord).mock.invocationCallOrder[0])
+      .toBeLessThan(command.mock.invocationCallOrder[0])
+  })
+
+  it('does not mutate Docker when a read-only immutable ID preflight fails', async () => {
+    vi.mocked(cachedOrcadSlotInstalled).mockResolvedValue(false)
+    vi.mocked(isRemoteInstallComplete).mockResolvedValue(false)
+    vi.mocked(readPinnedG5DockerContainerId).mockRejectedValueOnce(
+      new Error('immutable preflight cannot qualify')
+    )
+    await expect(launch(bridge)).rejects.toThrow('immutable preflight cannot qualify')
+    expect(command).not.toHaveBeenCalled()
+    expect(publishG5ReconciliationRecord).not.toHaveBeenCalled()
     expect(finalizeInstall).not.toHaveBeenCalled()
   })
 

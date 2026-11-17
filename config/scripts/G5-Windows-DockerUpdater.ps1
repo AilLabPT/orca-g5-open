@@ -158,6 +158,15 @@ function Get-G5Readiness {
         $actual=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'sh','-c',
           ('ps -o args= -p '+$pidValue))) -join ' '
         if ($actual.Contains($path)) {
+          $stat=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'cat',
+            ('/proc/'+$pidValue+'/stat')))[-1]
+          $endName=([string]$stat).LastIndexOf(')')
+          if ($endName -lt 0) { throw 'Daemon start tick record invalid' }
+          $statFields=([string]$stat).Substring($endName+1).Trim() -split '\s+'
+          if ($statFields.Count -le 19 -or $statFields[19] -notmatch '^[0-9]+$') {
+            throw 'Daemon start tick record invalid'
+          }
+          $expectedTicks=$statFields[19]
           $socketMatch=[regex]::Match($actual,'(?:^|\s)--socket\s+([^\s]+)')
           $tokenMatch=[regex]::Match($actual,'(?:^|\s)--token\s+([^\s]+)')
           if ($socketMatch.Success -and $tokenMatch.Success) {
@@ -168,13 +177,23 @@ function Get-G5Readiness {
             $encoded=[Convert]::ToBase64String([IO.File]::ReadAllBytes($probeFile))
             $runner="import base64;exec(compile(base64.b64decode('$encoded'),'<health>','exec'))"
             $reply=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'python3','-c',
-              $runner,$socketMatch.Groups[1].Value,$tokenMatch.Groups[1].Value))
+              $runner,$socketMatch.Groups[1].Value,$tokenMatch.Groups[1].Value,
+              [string]$pidValue,$expectedTicks))
             $jsonLines=@($reply | Where-Object { ([string]$_).Trim().StartsWith('{') })
             if ($jsonLines.Count -eq 1) {
               $verified=$jsonLines[0] | ConvertFrom-Json
               $healthy=$verified.healthy -eq $true -and
                 $verified.protocolVersion -eq 54 -and
-                $verified.coverage -eq 'pty-spawn'
+                $verified.coverage -eq 'pty-spawn' -and
+                $verified.daemonPid -eq $pidValue -and
+                $verified.startTicks -eq $expectedTicks
+              if ($healthy) {
+                $startedAgain=@(Invoke-Docker @('inspect',$Script:ContainerIdentity,
+                  '--format','{{.State.StartedAt}}'))[-1].Trim()
+                $cmdAgain=@(Invoke-Docker @('exec',$Script:ContainerIdentity,'sh','-c',
+                  ('ps -o args= -p '+$pidValue))) -join ' '
+                $healthy=($startedAgain -ceq $started -and $cmdAgain -ceq $actual)
+              }
             }
           }
         }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readPinnedG5DockerContainerId } from './orcad-g5-docker-preflight'
 import { orcadWindowsNodeCommandLine } from './orcad-remote-windows-node'
 import { orcadNodePtyNativeArtifacts, orcadRipgrepArtifact } from '../../../shared/orcad-artifacts'
 import { orcadAgentBrowserNativeName } from '../../../shared/orcad-agent-browser-name'
@@ -189,11 +190,28 @@ async function prepareG5Reconciliation(
   if (current?.phase === 'pending' && !current.containerId) {
     throw new Error('G5 pending mutation has unknown immutable container identity; manual reconciliation required')
   }
+  // Read the real immutable container ID under both native and per-container locks
+  // BEFORE writing durable intent and before calling Docker Ensure. Even when the
+  // first attempt selects V12 but requires a restart, the pending journal now
+  // has enough identity evidence to retry safely against the exact same container.
+  const coordination = {
+    lockDir: g5ContainerLockDir(options, remoteDir, config.container),
+    ownerToken: token
+  }
+  const pinnedContainerId = await readPinnedG5DockerContainerId({
+    conn: options.conn,
+    host: options.host,
+    signal: options.signal,
+    g5Docker: config
+  }, coordination)
+  if (current?.containerId && current.containerId !== pinnedContainerId) {
+    throw new Error('G5 reconciliation conflict: immutable Docker container was replaced')
+  }
   const record: G5ReconciliationRecord = {
     schema: 1,
     container: config.container,
     imageId: config.expectedImageId,
-    ...(current?.containerId ? { containerId: current.containerId } : {}),
+    containerId: pinnedContainerId,
     nativeVersion,
     ownerToken: token,
     phase: 'pending'
