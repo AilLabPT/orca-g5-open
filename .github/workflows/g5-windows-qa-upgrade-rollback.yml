@@ -150,10 +150,10 @@ jobs:
             # Existing product harness performs real silent NSIS install/upgrade and
             # checks daemon/session behavior, interactivity and window flash.
             $from=$items[0];$to=$items[1]
-            & node tests/tools/win-update-e2e/run.mjs --from $from --to $to --expect cold-restore --soak-seconds 25 2>&1 |
+            & node tests/tools/win-update-e2e/run.mjs --from $from --to $to --expect survival --soak-seconds 25 2>&1 |
               Tee-Object -FilePath (Join-Path $root 'upgrade.log')
             if($LASTEXITCODE -ne 0){throw 'Real QA installer upgrade failed'}
-            & node tests/tools/win-update-e2e/run.mjs --from $to --to $from --expect cold-restore --soak-seconds 25 2>&1 |
+            & node tests/tools/win-update-e2e/run.mjs --from $to --to $from --expect survival --soak-seconds 25 2>&1 |
               Tee-Object -FilePath (Join-Path $root 'rollback.log')
             if($LASTEXITCODE -ne 0){throw 'Real QA installer downgrade/rollback failed'}
             [ordered]@{
