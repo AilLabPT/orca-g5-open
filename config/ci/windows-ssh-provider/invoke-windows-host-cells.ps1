@@ -25,15 +25,19 @@ $priorBackground=$env:ORCA_BACKGROUND_LAUNCH
 $failed=[Collections.Generic.List[string]]::new()
 $summary=[Collections.Generic.List[hashtable]]::new()
 
-function Invoke-PrivateSsh([string]$Account,[string]$Command) {
+function Invoke-PrivateSsh([string]$Account,[string]$Command,[switch]$RequireSuccess) {
   $start=[Diagnostics.ProcessStartInfo]::new($Context.sshExe)
   $start.UseShellExecute=$false;$start.CreateNoWindow=$true;$start.RedirectStandardOutput=$true;$start.RedirectStandardError=$true
   foreach($argument in @('-F','NUL','-T','-p',[string]$Context.port,'-i',$Context.identityFile,'-o','BatchMode=yes','-o','IdentitiesOnly=yes','-o','StrictHostKeyChecking=yes','-o',"UserKnownHostsFile=$($Context.knownHosts)",'-o','ConnectTimeout=5',"$Account@127.0.0.1",$Command)){$start.ArgumentList.Add($argument)}
   $process=[Diagnostics.Process]::Start($start)
   try {
-    $stdout=$process.StandardOutput.ReadToEndAsync();$null=$process.StandardError.ReadToEndAsync()
+    $stdout=$process.StandardOutput.ReadToEndAsync();$stderr=$process.StandardError.ReadToEndAsync()
     if(-not $process.WaitForExit(30000)){$process.Kill($true);throw 'Private SSH probe deadline exceeded'}
-    return $stdout.GetAwaiter().GetResult()
+    $value=$stdout.GetAwaiter().GetResult();$null=$stderr.GetAwaiter().GetResult()
+    if($RequireSuccess -and $process.ExitCode -ne 0){
+      throw "Private SSH command rejected under actual account $Account (exit $($process.ExitCode))"
+    }
+    return $value
   } finally {$process.Dispose()}
 }
 
@@ -105,11 +109,12 @@ try {
     # G5 security gate: verify Docker under the ACTUAL unprivileged SSH identity.
     # The GitHub runner's elevated docker info is not evidence for this account.
     if($env:ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE -eq '1'){
-      $principal=(Invoke-PrivateSsh $account.name 'whoami').Trim()
-      if(-not $principal -or $principal -notmatch [regex]::Escape($account.name)){
+      $principal=(Invoke-PrivateSsh $account.name 'whoami' -RequireSuccess).Trim()
+      $expected='^[^\\]+\\'+[regex]::Escape($account.name)+'$'
+      if(-not [regex]::IsMatch($principal,$expected,[System.Text.RegularExpressions.RegexOptions]::IgnoreCase)){
         throw "G5 SSH principal mismatch for $cell"
       }
-      $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"').Trim()
+      $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess).Trim()
       $authorized=($dockerAnswer -eq 'linux')
       $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshDockerLinuxAuthorized=$authorized;
         verifiedUnderActualSshIdentity=$true;dockerOutput=($dockerAnswer.Substring(0,[Math]::Min(200,$dockerAnswer.Length)))})

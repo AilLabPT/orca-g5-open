@@ -162,6 +162,12 @@ jobs:
             resources
             tests
             src
+      - name: Test G5 Docker runtime isolation rules before preparing the SSH host
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
+        shell: pwsh
+        run: |
+          & powershell.exe -NoProfile -NonInteractive -File config/scripts/test-g5-docker-isolation.ps1
+          if($LASTEXITCODE -ne 0){throw 'G5 Docker isolation contract failed'}
       - name: Provision pinned Linux Docker engine on isolated G5 Windows runner
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && matrix.arch == 'x64' }}
         uses: wslkit/setup-skrog@cd2cba80924975b0c77217947c228da8aac17b1f

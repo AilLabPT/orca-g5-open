@@ -122,6 +122,38 @@ function Assert-LinuxDockerContainer {
   if ($ExpectedContainerId -and $info[4] -cne $ExpectedContainerId) {
     throw 'G5 container was replaced before mutation: immutable ID does not match'
   }
+  # A matching image and --network none do not prove that the container itself
+  # is isolated. Reject Docker privileges, host namespace sharing and any
+  # device/capability/bind/volume/socket access before executing commands.
+  $hostConfigJson = @(Invoke-Docker @('inspect',$info[4],'--format','{{json .HostConfig}}'))[-1].Trim()
+  $hostConfig = $hostConfigJson | ConvertFrom-Json
+  if (-not $hostConfig -or $hostConfig.PSObject.Properties.Name -notcontains 'Privileged' -or
+      $hostConfig.Privileged -ne $false -or $hostConfig.NetworkMode -ne 'none' -or
+      $hostConfig.PublishAllPorts -ne $false -or
+      $hostConfig.PidMode -notin @('','private') -or
+      $hostConfig.IpcMode -notin @('','private') -or
+      $hostConfig.UTSMode -notin @('','private') -or
+      $hostConfig.UsernsMode -notin @('','private') -or
+      $hostConfig.CgroupnsMode -notin @('','private')) {
+    throw 'G5 Docker privileged or host namespace configuration forbidden'
+  }
+  foreach ($field in @('Binds','Mounts','VolumesFrom','Devices','DeviceRequests',
+                      'CapAdd','SecurityOpt','Tmpfs','PortBindings','Links')) {
+    $value = $hostConfig.$field
+    if ($null -eq $value) { continue }
+    if ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) { continue }
+    if ($value -is [array] -and $value.Count -eq 0) { continue }
+    if ($value -is [System.Collections.IDictionary] -and $value.Count -eq 0) { continue }
+    if ($value -is [pscustomobject] -and @($value.PSObject.Properties).Count -eq 0) { continue }
+    throw "G5 Docker unsafe host configuration: $field"
+  }
+  $mountsJson = @(Invoke-Docker @('inspect',$info[4],'--format','{{json .Mounts}}'))[-1].Trim()
+  if ($mountsJson -ne '[]' -and $mountsJson -ne 'null') {
+    throw 'G5 Docker volume, bind or socket mounts forbidden'
+  }
+  if ((Get-G5ContainerId) -cne $info[4]) {
+    throw 'G5 Docker container identity changed during isolation preflight'
+  }
   return $info[4]
 }
 function Get-G5ContainerId {
