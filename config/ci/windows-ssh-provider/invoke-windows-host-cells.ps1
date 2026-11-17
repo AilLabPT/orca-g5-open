@@ -125,12 +125,55 @@ try {
          $identity[0].principal -ine $principal){
         throw "G5 SSH authenticated principal SID mismatch for $cell"
       }
-      $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess).Trim()
-      $authorized=($dockerAnswer -eq 'linux')
-      $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshDockerLinuxAuthorized=$authorized;
-        verifiedUnderActualSshIdentity=$true;dockerOutput=($dockerAnswer.Substring(0,[Math]::Min(200,$dockerAnswer.Length)))})
-      Write-Host "G5 SSH account Docker authorization: $cell, principal=$principal, linux=$authorized"
-      if(-not $authorized){throw "G5 SSH account cannot access Linux Docker; full installer must remain HOLD ($cell)"}
+      if($env:ORCA_G5_SCOPED_BROKER_PROBE -eq '1'){
+        # The standard SSH principal must NOT gain unrestricted Docker access.
+        $directDenied=$false
+        try{
+          $null=Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess
+        }catch{
+          if($_.Exception.Message -match '^Private SSH command rejected under actual account '){
+            $directDenied=$true
+          }else{throw}
+        }
+        if(-not $directDenied){throw 'G5 SSH principal has unrestricted Docker access; refused broker qualification'}
+        $pipeName='g5-'+[guid]::NewGuid().ToString('N').Substring(0,16)
+        $serverScript=Join-Path $SourceRoot 'config/scripts/g5-scoped-docker-broker.ps1'
+        $clientScript=Join-Path $SourceRoot 'config/scripts/g5-scoped-docker-broker-client.ps1'
+        foreach($scriptPath in @($serverScript,$clientScript)){
+          if(-not(Test-Path -LiteralPath $scriptPath)){throw 'Required G5 broker script missing'}
+        }
+        $logBase=Join-Path $ReceiptRoot ($cell+'.broker')
+        $serverProcess=Start-Process powershell.exe -ArgumentList @(
+          '-NoProfile','-NonInteractive','-File',('"' + $serverScript + '"'),
+          '-AuthorizedSid',$account.sid,'-PipeName',$pipeName
+        ) -PassThru -WindowStyle Hidden -RedirectStandardOutput ($logBase+'.out.log') -RedirectStandardError ($logBase+'.err.log')
+        try{
+          Start-Sleep -Milliseconds 900
+          if($serverProcess.HasExited){throw 'G5 broker exited before SSH client connection'}
+          $clientCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$clientScript+'" -PipeName '+$pipeName
+          $reply=(Invoke-PrivateSsh $account.name $clientCommand -RequireSuccess).Trim()
+          if($reply -cne 'G5_SCOPED_BROKER_ENGINE_LINUX_OK'){
+            throw 'G5 scoped SSH identity broker did not prove Linux Docker'
+          }
+          if(-not $serverProcess.WaitForExit(10000) -or $serverProcess.ExitCode -ne 0){
+            throw 'G5 scoped broker did not terminate cleanly'
+          }
+          $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshPrincipalSid=$account.sid;
+            directDockerAccessDenied=$true;scopedBrokerReadOnlyLinux=$true;
+            fullG5RemoteInstallerQualified=$false})
+          Write-Host ('G5_SSH_SCOPED_READ_ONLY_BROKER_PASS cell='+$cell)
+        }finally{
+          if(-not $serverProcess.HasExited){Stop-Process -Id $serverProcess.Id -Force -ErrorAction SilentlyContinue}
+          $serverProcess.Dispose()
+        }
+      }else{
+        $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess).Trim()
+        $authorized=($dockerAnswer -eq 'linux')
+        $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshDockerLinuxAuthorized=$authorized;
+          verifiedUnderActualSshIdentity=$true;dockerOutput=($dockerAnswer.Substring(0,[Math]::Min(200,$dockerAnswer.Length)))})
+        Write-Host "G5 SSH account Docker authorization: $cell, principal=$principal, linux=$authorized"
+        if(-not $authorized){throw "G5 SSH account cannot access Linux Docker; full installer must remain HOLD ($cell)"}
+      }
     }
     if(Test-Path -LiteralPath $Context.forbiddenToolLog){Move-Item -LiteralPath $Context.forbiddenToolLog -Destination (Join-Path $ReceiptRoot "$cell.before.forbidden-tool-calls.log")}
     $descriptor=Join-Path $ReceiptRoot "$cell.descriptor.json"

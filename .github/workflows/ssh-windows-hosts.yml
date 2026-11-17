@@ -78,6 +78,11 @@ on:
         type: boolean
         required: false
         default: false
+      g5_scoped_broker_probe:
+        description: Verify read-only SID-restricted Docker broker via actual standard SSH user; does not qualify installer mutations.
+        type: boolean
+        required: false
+        default: false
       cells:
         description: Comma-separated cell ids from src/main/ssh/ssh-windows-host-cells.ts; empty runs the default set (orcad-cli-* cells run only when named).
         required: false
@@ -144,6 +149,7 @@ jobs:
       ORCA_BACKGROUND_LAUNCH: '1'
       ORCA_ISOLATED_SSH_CI: '1'
       ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && '1' || '0' }}
+      ORCA_G5_SCOPED_BROKER_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && inputs.g5_scoped_broker_probe && '1' || '0' }}
       INBOX_PREPARATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.preparation_mode == 'serial' && 'serial' || 'overlap' }}
     steps:
       - uses: actions/checkout@v6
