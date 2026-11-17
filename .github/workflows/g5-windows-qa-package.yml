@@ -2,6 +2,15 @@ name: G5 Windows QA installer - unsigned and temporary test signature
 
 on:
   workflow_dispatch:
+    inputs:
+      template_run_id:
+        description: Completed cross-platform G5 template qualification run ID
+        required: true
+        type: string
+      source_sha:
+        description: Full exact source commit SHA matching the template run
+        required: true
+        type: string
   push:
     branches: [g5-security-wip-20261116]
     paths:
@@ -9,23 +18,47 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   qa-package:
-    if: github.repository == 'AilLabPT/orca-g5-open'
+    if: github.repository == 'AilLabPT/orca-g5-open' && github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 125
     env:
       CI: 'true'
       ORCA_BACKGROUND_LAUNCH: '1'
-      ORCA_BUILD_COMMIT: ${{ github.sha }}
+      ORCA_BUILD_COMMIT: ${{ inputs.source_sha }}
       ORCA_REQUIRE_ORCAD_TEMPLATE: '1'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      SOURCE_SHA: ${{ inputs.source_sha }}
       NODE_OPTIONS: '--max-old-space-size=4096'
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          ref: ${{ inputs.source_sha }}
+      - name: Authorize exact source and complete template producer
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEMPLATE_RUN: ${{ inputs.template_run_id }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          $ErrorActionPreference='Stop'
+          if($env:SOURCE_SHA -notmatch '^[a-f0-9]{40}$' -or $env:TEMPLATE_RUN -notmatch '^[0-9]{8,14}$'){
+            throw 'Invalid template run or source SHA'
+          }
+          if((git rev-parse HEAD).Trim() -ne $env:SOURCE_SHA){throw 'QA checkout source SHA mismatch'}
+          $producer=(& gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$env:TEMPLATE_RUN" | ConvertFrom-Json)
+          if($LASTEXITCODE -ne 0 -or -not $producer){throw 'Template producer unavailable'}
+          if($producer.workflow_id -ne 416781863 -or $producer.status -ne 'completed' -or
+             $producer.conclusion -ne 'success' -or $producer.head_sha -ne $env:SOURCE_SHA -or
+             $producer.head_branch -ne 'g5-security-wip-20261116'){
+            throw 'Template qualification producer not approved for exact G5 source'
+          }
+          Write-Host ('G5_FULL_TEMPLATE_SOURCE_AUTHORIZED='+$env:SOURCE_SHA)
+
       - uses: ./.github/actions/install-node-dependencies
         with:
           native-runtime: node
@@ -42,11 +75,19 @@ jobs:
         uses: ./.github/actions/prepare-windows-cli-launcher
         with:
           arches: x64
-      - name: Build complete G5 deployment template
+      - name: Fetch the qualified eight-target G5 deployment template
+        uses: actions/download-artifact@v8
+        with:
+          run-id: ${{ inputs.template_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+          name: orcad-template
+          path: out/orcad-template
+      - name: Independently verify complete G5 deployment template inventory
         shell: pwsh
         run: |
-          node config/scripts/build-orcad-template.mjs --targets win32-x64
-          if($LASTEXITCODE -ne 0){throw 'G5 orcad deployment template failed'}
+          node -e "require('./config/scripts/verify-packaged-orcad-template.cjs').verifyPackagedOrcadTemplate('out')"
+          if($LASTEXITCODE -ne 0){throw 'The downloaded G5 template failed full inventory verification'}
       - name: Package isolated QA installer (never publish)
         shell: pwsh
         run: |
@@ -73,7 +114,7 @@ jobs:
             $target=Join-Path $qa 'orca-windows-setup-TEST-SIGNED.exe'
             Copy-Item -LiteralPath $exe -Destination $target
             $receipt=[ordered]@{
-              sourceCommit=$env:GITHUB_SHA
+              sourceCommit=$env:SOURCE_SHA
               runnerOS=$env:RUNNER_OS
               unsignedSha256=$before
               testSignedSha256=(Get-FileHash -Algorithm SHA256 $target).Hash
