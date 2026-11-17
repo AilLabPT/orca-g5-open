@@ -1,0 +1,95 @@
+name: G5 Windows QA installer - unsigned and temporary test signature
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/g5-windows-qa-package.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  qa-package:
+    if: github.repository == 'AilLabPT/orca-g5-open'
+    runs-on: windows-2022
+    timeout-minutes: 125
+    env:
+      CI: 'true'
+      ORCA_BACKGROUND_LAUNCH: '1'
+      ORCA_BUILD_COMMIT: ${{ github.sha }}
+      ORCA_REQUIRE_ORCAD_TEMPLATE: '1'
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      NODE_OPTIONS: '--max-old-space-size=4096'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/install-node-dependencies
+        with:
+          native-runtime: node
+          cache-pnpm-store: 'false'
+      - uses: ./.github/actions/install-mobile-dependencies
+      - name: Build exact source application (without release credentials)
+        shell: pwsh
+        run: |
+          pnpm run build:release
+          if($LASTEXITCODE -ne 0){throw 'Release source build failed'}
+      - name: Build G5 Windows runtime and complete deployment template
+        shell: pwsh
+        run: |
+          pnpm run build:orcad-prebuilds --require-slots win32-x64
+          if($LASTEXITCODE -ne 0){throw 'G5 Windows native prebuild failed'}
+          node config/scripts/build-orcad-template.mjs --targets win32-x64
+          if($LASTEXITCODE -ne 0){throw 'G5 orcad deployment template failed'}
+      - name: Package isolated QA installer (never publish)
+        shell: pwsh
+        run: |
+          node config/scripts/ensure-native-runtime.mjs --runtime=electron
+          if($LASTEXITCODE -ne 0){throw 'Electron runtime failure'}
+          pnpm exec electron-builder --config config/electron-builder.config.cjs --win --publish never
+          if($LASTEXITCODE -ne 0){throw 'Windows installer packaging failed'}
+      - name: Hash, temporarily test-sign and inspect QA installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $qa=Join-Path $env:RUNNER_TEMP 'g5-windows-qa'
+          New-Item -ItemType Directory -Force -Path $qa |Out-Null
+          $matches=@(Get-ChildItem -Path (Join-Path $pwd 'dist') -Recurse -File -Filter orca-windows-setup.exe -ErrorAction SilentlyContinue)
+          if($matches.Count -ne 1){throw "Expected one QA installer under dist; found $($matches.Count)"}
+          $exe=$matches[0].FullName
+          $before=(Get-FileHash -Algorithm SHA256 $exe).Hash
+          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Orca G5 Ephemeral QA Test Only' -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy NonExportable -HashAlgorithm SHA256
+          if(-not $cert){throw 'QA certificate creation failed'}
+          try{
+            $result=Set-AuthenticodeSignature -FilePath $exe -Certificate $cert -HashAlgorithm SHA256
+            $signature=Get-AuthenticodeSignature -FilePath $exe
+            if(-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $cert.Thumbprint){throw 'QA signature not embedded'}
+            $target=Join-Path $qa 'orca-windows-setup-TEST-SIGNED.exe'
+            Copy-Item -LiteralPath $exe -Destination $target
+            $receipt=[ordered]@{
+              sourceCommit=$env:GITHUB_SHA
+              runnerOS=$env:RUNNER_OS
+              unsignedSha256=$before
+              testSignedSha256=(Get-FileHash -Algorithm SHA256 $target).Hash
+              testSignatureOnly=$true
+              publicCodeSigningTrustVerified=$false
+              qaSigner=$cert.Subject
+              signatureStatus=[string]$signature.Status
+              signatureThumbprint=$cert.Thumbprint
+              productionReleaseAuthorized=$false
+            }
+            $receipt | ConvertTo-Json |Set-Content -Encoding UTF8 (Join-Path $qa 'qa-receipt.json')
+            Write-Host 'G5_TEST_SIGNED_QA_PACKAGE_CREATED_NOT_TRUSTED_PRODUCTION'
+          }finally{
+            Remove-Item -LiteralPath ('Cert:\CurrentUser\My\'+$cert.Thumbprint) -ErrorAction SilentlyContinue
+          }
+      - name: Upload QA package, hashes and explicit signing caveat
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: g5-windows-qa-installer-test-signed
+          path: ${{ runner.temp }}/g5-windows-qa/
+          if-no-files-found: warn
+          retention-days: 2
