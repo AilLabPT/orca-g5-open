@@ -93,6 +93,7 @@ for($n=0;$n -lt $MaxRequests;$n++){
          @($body.PSObject.Properties).Count -ne 1 -or
          $body.PSObject.Properties.Name -notcontains 'op' -or
          $body.op -cnotin $allowedVerbs){
+        [Console]::WriteLine("G5_BROKER_NOT_AUTHORIZED {0:o}", [DateTime]::UtcNow)
         $writer.WriteLine('{"ok":false,"code":"NOT_AUTHORIZED"}')
         continue
       }
