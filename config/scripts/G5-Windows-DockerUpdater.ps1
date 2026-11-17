@@ -127,9 +127,11 @@ function Assert-LinuxDockerContainer {
   # device/capability/bind/volume/socket access before executing commands.
   $hostConfigJson = @(Invoke-Docker @('inspect',$info[4],'--format','{{json .HostConfig}}'))[-1].Trim()
   $hostConfig = $hostConfigJson | ConvertFrom-Json
-  if (-not $hostConfig -or $hostConfig.PSObject.Properties.Name -notcontains 'Privileged' -or
-      $hostConfig.Privileged -ne $false -or $hostConfig.NetworkMode -ne 'none' -or
-      $hostConfig.PublishAllPorts -ne $false -or
+  if (-not $hostConfig -or $hostConfig -isnot [pscustomobject] -or
+      $hostConfig.PSObject.Properties.Name -notcontains 'Privileged' -or
+      $hostConfig.Privileged -isnot [bool] -or $hostConfig.Privileged -ne $false -or
+      $hostConfig.NetworkMode -isnot [string] -or $hostConfig.NetworkMode -cne 'none' -or
+      $hostConfig.PublishAllPorts -isnot [bool] -or $hostConfig.PublishAllPorts -ne $false -or
       $hostConfig.PidMode -notin @('','private') -or
       $hostConfig.IpcMode -notin @('','private') -or
       $hostConfig.UTSMode -notin @('','private') -or

@@ -24,6 +24,9 @@ function docker {
         CapAdd=$null;SecurityOpt=$null;Tmpfs=$null;PortBindings=@{};Links=$null
       }
       if($script:CurrentCase -eq 'privileged'){$config.Privileged=$true}
+      if($script:CurrentCase -eq 'privileged-not-bool'){$config.Privileged=0}
+      if($script:CurrentCase -eq 'publish-not-bool'){$config.PublishAllPorts=0}
+      if($script:CurrentCase -eq 'missing-privileged'){$config.Remove('Privileged')}
       if($script:CurrentCase -eq 'host-pid'){$config.PidMode='host'}
       if($script:CurrentCase -eq 'host-ipc'){$config.IpcMode='host'}
       if($script:CurrentCase -eq 'added-capability'){$config.CapAdd=@('SYS_ADMIN')}
@@ -50,7 +53,7 @@ function docker {
   throw ('Unexpected Docker fixture command: '+($argv -join ' '))
 }
 $ok=0
-foreach($case in @('clean','privileged','host-pid','host-ipc','added-capability','device','socket-bind','port-binding','mount')){
+foreach($case in @('clean','privileged','privileged-not-bool','publish-not-bool','missing-privileged','host-pid','host-ipc','added-capability','device','socket-bind','port-binding','mount')){
   $script:CurrentCase=$case
   $script:Commands=@()
   try {
@@ -71,5 +74,5 @@ foreach($case in @('clean','privileged','host-pid','host-ipc','added-capability'
   }
   $ok++
 }
-if($ok -ne 9){throw 'G5 isolation test coverage incomplete'}
-Write-Host 'G5_ISOLATION_CONTRACT_9_OF_9_PASS'
+if($ok -ne 12){throw 'G5 isolation test coverage incomplete'}
+Write-Host 'G5_ISOLATION_CONTRACT_12_OF_12_PASS'

@@ -114,6 +114,17 @@ try {
       if(-not [regex]::IsMatch($principal,$expected,[System.Text.RegularExpressions.RegexOptions]::IgnoreCase)){
         throw "G5 SSH principal mismatch for $cell"
       }
+      # The provisioner is the sole source of the intended Windows local SID.
+      # A matching username under another machine/domain is not sufficient.
+      if(-not $account.sid -or $account.sid -notmatch '^S-1-5-[0-9-]+$'){
+        throw 'G5 expected SSH SID missing or malformed'
+      }
+      $identityCsv=(Invoke-PrivateSsh $account.name 'whoami /user /fo csv /nh' -RequireSuccess).Trim()
+      $identity=@($identityCsv | ConvertFrom-Csv -Header @('principal','sid'))
+      if($identity.Count -ne 1 -or $identity[0].sid -cne $account.sid -or
+         $identity[0].principal -ine $principal){
+        throw "G5 SSH authenticated principal SID mismatch for $cell"
+      }
       $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"' -RequireSuccess).Trim()
       $authorized=($dockerAnswer -eq 'linux')
       $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshDockerLinuxAuthorized=$authorized;
