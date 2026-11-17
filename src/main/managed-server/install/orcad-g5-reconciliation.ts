@@ -110,7 +110,7 @@ function verifiedRecord(value: unknown): G5ReconciliationRecord {
       ('containerId' in value &&
         (typeof value.containerId !== 'string' ||
          !/^[a-f0-9]{64}$/u.test(value.containerId))) ||
-      (!('containerId' in value) && value.phase === 'qualified') ||
+      (!('containerId' in value) && 'phase' in value && value.phase === 'qualified') ||
       !('nativeVersion' in value) || typeof value.nativeVersion !== 'string' ||
       value.nativeVersion.length < 1 || value.nativeVersion.length > 200 ||
       !('ownerToken' in value) || typeof value.ownerToken !== 'string' ||

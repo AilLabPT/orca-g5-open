@@ -206,7 +206,7 @@ async function reconcileG5OnSlot(
   remoteDir: string,
   fullVersion: string,
   token: string
-): Promise<void> {
+): Promise<string | undefined> {
   const record = await prepareG5Reconciliation(options, remoteDir, fullVersion, token)
   if (!record) return
   const coordination: G5Coordination = {

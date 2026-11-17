@@ -211,8 +211,10 @@ const ops = {
   // Antivirus holding the record open shows up as EPERM/EACCES/EBUSY; retry briefly.
   'record-publish'(staged, file, lockDir, ownerToken) {
     const checkG5Owner = () => {
-      if (Boolean(lockDir) !== Boolean(ownerToken)) throw Error('incomplete G5 publish fence')
-      if (lockDir && fenceOwner(lockDir) !== ownerToken) {
+      const effectiveLock = lockDir || FENCE_DIR
+      const effectiveToken = ownerToken || FENCE_TOKEN
+      if (Boolean(effectiveLock) !== Boolean(effectiveToken)) throw Error('incomplete G5 publish fence')
+      if (effectiveLock && fenceOwner(effectiveLock) !== effectiveToken) {
         throw Error('G5 journal publication owner superseded')
       }
     }
