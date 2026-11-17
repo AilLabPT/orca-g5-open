@@ -143,6 +143,7 @@ jobs:
     env:
       ORCA_BACKGROUND_LAUNCH: '1'
       ORCA_ISOLATED_SSH_CI: '1'
+      ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.g5_linux_docker && '1' || '0' }}
       INBOX_PREPARATION_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.preparation_mode == 'serial' && 'serial' || 'overlap' }}
     steps:
       - uses: actions/checkout@v6

@@ -102,6 +102,20 @@ try {
     $dispatch=Invoke-PrivateSsh $account.name 'echo %COMSPEC%'
     $dispatchShell=if($dispatch -match '(?i)\\cmd\.exe'){'cmd'}elseif($dispatch -match '%COMSPEC%'){'powershell'}else{'unknown'}
     if($dispatchShell -ne $shell){throw "DefaultShell $shell did not take effect for $cell (saw $dispatchShell)"}
+    # G5 security gate: verify Docker under the ACTUAL unprivileged SSH identity.
+    # The GitHub runner's elevated docker info is not evidence for this account.
+    if($env:ORCA_G5_SSH_DOCKER_PRINCIPAL_PROBE -eq '1'){
+      $principal=(Invoke-PrivateSsh $account.name 'whoami').Trim()
+      if(-not $principal -or $principal -notmatch [regex]::Escape($account.name)){
+        throw "G5 SSH principal mismatch for $cell"
+      }
+      $dockerAnswer=(Invoke-PrivateSsh $account.name 'docker info --format "{{.OSType}}"').Trim()
+      $authorized=($dockerAnswer -eq 'linux')
+      $summary.Add(@{cell=$cell;sshPrincipal=$principal;sshDockerLinuxAuthorized=$authorized;
+        verifiedUnderActualSshIdentity=$true;dockerOutput=($dockerAnswer.Substring(0,[Math]::Min(200,$dockerAnswer.Length)))})
+      Write-Host "G5 SSH account Docker authorization: $cell, principal=$principal, linux=$authorized"
+      if(-not $authorized){throw "G5 SSH account cannot access Linux Docker; full installer must remain HOLD ($cell)"}
+    }
     if(Test-Path -LiteralPath $Context.forbiddenToolLog){Move-Item -LiteralPath $Context.forbiddenToolLog -Destination (Join-Path $ReceiptRoot "$cell.before.forbidden-tool-calls.log")}
     $descriptor=Join-Path $ReceiptRoot "$cell.descriptor.json"
     @{cell=$cell;target=$Target;host='127.0.0.1';port=[int]$Context.port;username=$account.name;identityFile=$Context.identityFile;home=$account.home;forbiddenToolLog=$Context.forbiddenToolLog;receipt=(Join-Path $ReceiptRoot "$cell.json")} | ConvertTo-Json | Set-Content -LiteralPath $descriptor -Encoding utf8NoBOM
