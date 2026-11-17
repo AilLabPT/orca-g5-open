@@ -1,6 +1,10 @@
 name: G5 Windows QA installer smoke - disposable VM
 
 on:
+  push:
+    branches: [g5-security-wip-20261116]
+    paths:
+      - '.github/workflows/g5-windows-qa-install-smoke.yml'
   workflow_dispatch:
     inputs:
       qa_run_id:
@@ -18,7 +22,7 @@ permissions:
 
 jobs:
   qa-installer-smoke:
-    if: github.repository == 'AilLabPT/orca-g5-open'
+    if: github.repository == 'AilLabPT/orca-g5-open' && github.event_name == 'workflow_dispatch'
     runs-on: windows-2022
     timeout-minutes: 25
     steps:
