@@ -11,6 +11,11 @@ on:
         description: Full exact source commit SHA matching the template run
         required: true
         type: string
+      qa_build_version:
+        description: 'QA-only Windows package version (1.4.246 or 1.4.247-g5qa.1)'
+        required: true
+        type: string
+        default: '1.4.246'
   push:
     branches: [g5-security-wip-20261116]
     paths:
@@ -32,6 +37,7 @@ jobs:
       ORCA_REQUIRE_ORCAD_TEMPLATE: '1'
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       SOURCE_SHA: ${{ inputs.source_sha }}
+      ORCA_LOCAL_BUILD_VERSION: ${{ inputs.qa_build_version }}
       NODE_OPTIONS: '--max-old-space-size=4096'
     steps:
       - uses: actions/checkout@v6
@@ -46,6 +52,9 @@ jobs:
           SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           $ErrorActionPreference='Stop'
+          if($env:ORCA_LOCAL_BUILD_VERSION -notin @('1.4.246','1.4.247-g5qa.1')){
+            throw 'Unsupported G5 QA-only package version'
+          }
           if($env:SOURCE_SHA -notmatch '^[a-f0-9]{40}$' -or $env:TEMPLATE_RUN -notmatch '^[0-9]{8,14}$'){
             throw 'Invalid template run or source SHA'
           }
@@ -115,6 +124,8 @@ jobs:
             Copy-Item -LiteralPath $exe -Destination $target
             $receipt=[ordered]@{
               sourceCommit=$env:SOURCE_SHA
+              qaBuildVersion=$env:ORCA_LOCAL_BUILD_VERSION
+              qaSyntheticVersion=($env:ORCA_LOCAL_BUILD_VERSION -ne '1.4.246')
               runnerOS=$env:RUNNER_OS
               unsignedSha256=$before
               testSignedSha256=(Get-FileHash -Algorithm SHA256 $target).Hash
