@@ -55,7 +55,8 @@ for($n=0;$n -lt $MaxRequests;$n++){
     [IO.Pipes.PipeOptions]::Asynchronous,4096,4096,$pipeSecurity
   )
   try{
-    $pipe.WaitForConnection()
+    $acceptTask=$pipe.WaitForConnectionAsync()
+    if(-not $acceptTask.Wait(12000)){throw 'G5_BROKER_ACCEPT_TIMEOUT'}
     $reader=[IO.StreamReader]::new($pipe,[Text.Encoding]::UTF8,$false,1024,$true)
     $writer=[IO.StreamWriter]::new($pipe,[Text.UTF8Encoding]::new($false),1024,$true)
     $writer.AutoFlush=$true
@@ -95,7 +96,7 @@ for($n=0;$n -lt $MaxRequests;$n++){
         $p=$ErrorActionPreference
         try{
           $ErrorActionPreference='Continue'
-          $output=& $dockerExe --context skrog info --format '{{.OSType}}' 2>&1
+          $output=& $dockerExe -H $contextEndpoint info --format '{{.OSType}}' 2>&1
           $status=$LASTEXITCODE
         }finally{$ErrorActionPreference=$p}
         if($status -ne 0){throw 'DOCKER_ENGINE_UNAVAILABLE'}

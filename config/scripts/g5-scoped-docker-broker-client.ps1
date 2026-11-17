@@ -30,10 +30,22 @@ try{
   $write.AutoFlush=$true
   try{
     $write.WriteLine((@{op=$Operation}|ConvertTo-Json -Compress))
-    $pending=$read.ReadLineAsync()
-    if(-not $pending.Wait($TimeoutMs)){throw 'G5_BROKER_RESPONSE_DEADLINE'}
-    $answer=$pending.Result
-    if(!$answer -or $answer.Length -gt 1024){throw 'G5_BROKER_REPLY_INVALID'}
+    # Bound the response WHILE reading, not after an unbounded ReadLineAsync.
+    $buffer=New-Object char[] 1
+    $acc=[Text.StringBuilder]::new()
+    $deadline=[DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
+    while($acc.Length -le 1024){
+      $remaining=[int][Math]::Max(1,($deadline-[DateTime]::UtcNow).TotalMilliseconds)
+      if($remaining -le 1){throw 'G5_BROKER_RESPONSE_DEADLINE'}
+      $task=$read.ReadAsync($buffer,0,1)
+      if(-not $task.Wait($remaining)){throw 'G5_BROKER_RESPONSE_DEADLINE'}
+      if($task.Result -ne 1){throw 'G5_BROKER_RESPONSE_INCOMPLETE'}
+      if($buffer[0] -eq [char]10){break}
+      if($buffer[0] -ne [char]13){$null=$acc.Append($buffer[0])}
+    }
+    if($acc.Length -gt 1024){throw 'G5_BROKER_REPLY_TOO_LONG'}
+    $answer=$acc.ToString()
+    if(!$answer){throw 'G5_BROKER_REPLY_INVALID'}
     $parsed=$answer|ConvertFrom-Json
     if($parsed.ok -ne $true -or $parsed.dockerOS -cne 'linux' -or
        $parsed.authorization -cne 'read-only-scoped-broker'){

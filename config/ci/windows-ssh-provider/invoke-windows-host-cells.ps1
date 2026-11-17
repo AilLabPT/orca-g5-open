@@ -139,7 +139,11 @@ try {
            'npipe:////./pipe/docker_engine','npipe:////./pipe/skrog_engine')){
           throw 'Expected local Skrog endpoint not available for scoped SSH ACL check'
         }
-        $directCommand='"'+$dockerExe+'" -H '+$endpoint+' info --format "{{.OSType}}"'
+        # PowerShell and cmd both accept an encoded PowerShell invocation.
+        # An executable path is never interpolated into a shell without '&'.
+        $directPs='$ErrorActionPreference="Continue"; & "'+$dockerExe+'" -H "'+$endpoint+'" info --format "{{.OSType}}"; exit $LASTEXITCODE'
+        $directEncoded=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($directPs))
+        $directCommand='powershell.exe -NoProfile -NonInteractive -EncodedCommand '+$directEncoded
         $direct=Invoke-PrivateSsh $account.name $directCommand -ReturnDetails
         if($direct.exitCode -eq 0){throw 'Unprivileged SSH account has broad direct Docker access'}
         if(($direct.stdout+$direct.stderr) -notmatch '(?i)(access is denied|access denied|access denied|permission denied|acesso negado)'){
@@ -159,7 +163,8 @@ try {
             (Join-Path $SourceRoot 'config'),
             (Join-Path $SourceRoot 'config/scripts'),
             $serverScript,$clientScript)){
-          $aclArg='*'+$account.sid+':(W)'
+          $perm=if(Test-Path -LiteralPath $protected -PathType Container){'(W,D,DC,WDAC,WO)'}else{'(W,D,WDAC,WO)'}
+          $aclArg='*'+$account.sid+':'+$perm
           & icacls.exe $protected '/deny' $aclArg | Out-Null
           if($LASTEXITCODE -ne 0){throw 'Could not protect G5 broker code from SSH account writes'}
         }
@@ -172,7 +177,20 @@ try {
           Start-Sleep -Milliseconds 900
           if($serverProcess.HasExited){throw 'G5 broker exited before SSH client connection'}
           $clientCommand='powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "'+$clientScript+'" -PipeName '+$pipeName+' -ExpectedServerPid '+$serverProcess.Id
-          $reply=(Invoke-PrivateSsh $account.name $clientCommand -RequireSuccess).Trim()
+          $clientResult=Invoke-PrivateSsh $account.name $clientCommand -ReturnDetails
+          if($clientResult.exitCode -ne 0){
+            # The client has no secret values; record only bounded diagnostic
+            # text from the disposable SSH test, not host credentials.
+            $diagnostic=[ordered]@{
+              exitCode=$clientResult.exitCode
+              stdout=$clientResult.stdout.Substring(0,[Math]::Min(800,$clientResult.stdout.Length))
+              stderr=$clientResult.stderr.Substring(0,[Math]::Min(1200,$clientResult.stderr.Length))
+            }
+            $diagnostic|ConvertTo-Json -Depth 3|
+              Set-Content -LiteralPath ($logBase+'.client-failure.json') -Encoding utf8NoBOM
+            throw 'G5 scoped SSH broker client failed; see sanitized receipt'
+          }
+          $reply=$clientResult.stdout.Trim()
           if($reply -cne 'G5_SCOPED_BROKER_ENGINE_LINUX_OK'){
             throw 'G5 scoped SSH identity broker did not prove Linux Docker'
           }
